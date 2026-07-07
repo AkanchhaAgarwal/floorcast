@@ -20,6 +20,7 @@ from floorcast_core.optimizer import optimize_allocation, DEFAULT_BAYS
 from floorcast_core.capacity_engine import interval_requirements, scheduled_headcount
 from floorcast_core.shift_scheduler import solve_shift_mix
 from floorcast_core.layout_engine import solve_layout
+from floorcast_core.reports import roster_report, forecast_report
 
 st.set_page_config(page_title="Floorcast", page_icon="🏢", layout="wide")
 
@@ -39,17 +40,19 @@ with tab1:
     st.sidebar.header("Roster source")
     uploaded = st.sidebar.file_uploader("Upload roster CSV", type="csv",
         help="Columns: date, agent_id, program, channel, shift, work_mode, status")
+    try:
+        with open("data/sample_roster.csv", "rb") as f:
+            st.sidebar.download_button("⬇ Download sample roster", f,
+                file_name="sample_roster.csv", mime="text/csv",
+                help="Try the upload feature with this 50-agent sample")
+    except FileNotFoundError:
+        pass
 
     st.sidebar.header("What-if levers")
     wfh_delta = st.sidebar.slider("WFH shift (± pct points)", -30, 30, 0, 5)
     hiring = st.sidebar.slider("New-hire batch (agents)", 0, 300, 0, 25)
     buffer_pct = st.sidebar.slider("Seat buffer %", 0, 20, 5, 1) / 100
-    with open("data/sample_roster.csv", "rb") as f:
-        st.sidebar.download_button(
-            "⬇ Download sample roster", f,
-            file_name="sample_roster.csv", mime="text/csv",
-            help="Try the upload feature with this 50-agent sample"
-        )
+
     @st.cache_data
     def load_roster(file):
         return pd.read_csv(file) if file else generate_roster()
@@ -125,6 +128,14 @@ with tab1:
         st.error(f"Solver status: {status}. Demand exceeds feasible capacity — "
                  "raise WFH, reduce office headcount, or add bays.")
         st.json(diag["seats_needed_by_program"])
+
+    st.download_button(
+        "📊 Download full report (Excel)",
+        roster_report(roster, demand, summary,
+                      alloc if status == "Optimal" else None, diag, day),
+        file_name=f"Floorcast_SeatPlan_{day}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Summary · Capacity Plan · Seat Demand · Bay Plan")
 
 # ══════════════════════════════════════════════════════ TAB 2 — Forecast → Floor
 with tab2:
@@ -239,5 +250,13 @@ with tab2:
         st.caption("Gold dotted columns = quiet zone (voice excluded). Layouts are planning drafts — "
                    "fire egress, travel distances, and occupancy limits must be verified and certified "
                    "by a licensed architect before implementation.")
+
+    st.download_button(
+        "📊 Download full report (Excel)",
+        forecast_report(res, pods_needed, grid, part_ft, month,
+                        sl_pct, shrink, pod_seats, TIMES),
+        file_name=f"Floorcast_Plan_Month{month}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Summary · Capacity Plan · Shift Schedule · Interval Coverage · Floor Plan")
 
 st.caption("Floorcast · reference implementation · synthetic data only — no client or employee data")
