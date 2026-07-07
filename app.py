@@ -44,7 +44,12 @@ with tab1:
     wfh_delta = st.sidebar.slider("WFH shift (± pct points)", -30, 30, 0, 5)
     hiring = st.sidebar.slider("New-hire batch (agents)", 0, 300, 0, 25)
     buffer_pct = st.sidebar.slider("Seat buffer %", 0, 20, 5, 1) / 100
-
+    with open("data/sample_roster.csv", "rb") as f:
+        st.sidebar.download_button(
+            "⬇ Download sample roster", f,
+            file_name="sample_roster.csv", mime="text/csv",
+            help="Try the upload feature with this 50-agent sample"
+        )
     @st.cache_data
     def load_roster(file):
         return pd.read_csv(file) if file else generate_roster()
