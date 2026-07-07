@@ -158,12 +158,18 @@ with tab2:
     pod_seats = colD.slider("Seats per pod", 4, 8, 6, 1)
 
     st.subheader("2 · Floor definition")
-    colE, colF, colG = st.columns(3)
-    rows = colE.slider("Pod rows", 4, 12, 8)
-    cols = colF.slider("Pod columns", 4, 14, 10)
-    quiet_n = colG.slider("Quiet columns (right side)", 0, 4, 2)
-    sqft = rows * cols * pod_seats * 30
-    st.caption(f"Floor ≈ {sqft:,} sq ft usable ({rows}×{cols} pods × {pod_seats} seats × ~30 sq ft/seat incl. circulation)")
+    colE, colF, colG, colH = st.columns(4)
+    n_floors = colE.number_input("Number of floors", 1, 6, 1)
+    floor_sqft = colF.number_input("Usable area per floor (sq ft)", 2000, 60000, 14400, step=500)
+    seat_sqft = colG.slider("Sq ft per seat (all-in)", 35, 70, 45, 5)
+    quiet_n = colH.slider("Quiet columns (right side)", 0, 4, 2)
+
+    seats_per_floor = int(floor_sqft // seat_sqft)
+    pods_per_floor = max(1, seats_per_floor // pod_seats)
+    cols = max(4, int(math.sqrt(pods_per_floor * 1.3)))
+    rows = max(3, pods_per_floor // cols)
+    st.caption(f"Each floor: {seats_per_floor} seats ≈ {rows*cols} pods (grid {rows}×{cols}) · "
+               f"{n_floors} floor(s) · total capacity {n_floors*rows*cols*pod_seats:,} seats")
 
     def profile(channel):
         x = np.arange(48)
@@ -214,46 +220,68 @@ with tab2:
     quiet_cols_ix = list(range(cols - quiet_n, cols)) if quiet_n else []
     voice_progs = {p for p, d in res.items() if d["channel"] == "voice"}
 
-    grid, part_ft = solve_layout(rows, cols, pods_needed, quiet_cols_ix, voice_progs)
+    # greedy bin packing: largest program first, onto the emptiest floor
+    floor_cap = rows * cols
+    floor_loads = [dict() for _ in range(n_floors)]
+    floor_free = [floor_cap] * n_floors
+    feasible = True
+    for p, need in sorted(pods_needed.items(), key=lambda kv: -kv[1]):
+        f = int(np.argmax(floor_free))
+        if need > floor_free[f]:
+            feasible = False
+        else:
+            floor_loads[f][p] = need
+            floor_free[f] -= need
 
-    if grid is None:
-        st.error(f"Infeasible: {sum(pods_needed.values())} pods needed but the floor has "
-                 f"{rows*cols} — enlarge the floor, raise WFH, or reduce volumes. "
+    if not feasible:
+        st.error(f"Infeasible: {sum(pods_needed.values())} pods needed but capacity is "
+                 f"{n_floors * floor_cap} (no single program may exceed one floor). "
+                 "Add floors/area, raise WFH, or reduce volumes. "
                  "This is Floorcast telling you 'impossible' before you promise it.")
+        grids, total_ft = [], 0
     else:
+        grids, total_ft = [], 0
         progs = list(res.keys())
         cmap = {p: PROG_COLORS[i % len(PROG_COLORS)] for i, p in enumerate(progs)}
-        z = np.zeros((rows, cols)); txt = np.full((rows, cols), "", dtype=object)
-        colorscale = [[0, "#E5E7EB"]]
-        for i, p in enumerate(progs, start=1):
-            colorscale.append([i / len(progs), cmap[p]])
-        for r in range(rows):
-            for c in range(cols):
-                p = grid[r][c]
-                z[r][c] = progs.index(p) + 1 if p else 0
-                txt[r][c] = p[:4] if p else ""
-        figl = go.Figure(go.Heatmap(z=z, text=txt, texttemplate="%{text}",
-                                    colorscale=colorscale, showscale=False,
-                                    xgap=3, ygap=3, textfont=dict(size=9, color="white")))
-        for qc in quiet_cols_ix:
-            figl.add_vrect(x0=qc - 0.5, x1=qc + 0.5, line_width=2, line_dash="dot",
-                           line_color="#C9962E")
-        figl.update_layout(height=90 + rows * 42, margin=dict(l=0, r=0, t=10, b=0),
-                           yaxis=dict(autorange="reversed", showticklabels=False),
-                           xaxis=dict(showticklabels=False))
-        st.plotly_chart(figl, width="stretch")
+        for f in range(n_floors):
+            if not floor_loads[f]:
+                continue
+            st.markdown(f"**Floor {f + 1}**")
+            grid, part_ft = solve_layout(rows, cols, floor_loads[f], quiet_cols_ix,
+                                         voice_progs & set(floor_loads[f]))
+            grids.append(grid)
+            total_ft += part_ft or 0
+            z = np.zeros((rows, cols)); txt = np.full((rows, cols), "", dtype=object)
+            colorscale = [[0, "#E5E7EB"]] + [[(i + 1) / len(progs), cmap[p]]
+                                             for i, p in enumerate(progs)]
+            for r in range(rows):
+                for c in range(cols):
+                    p = grid[r][c]
+                    z[r][c] = progs.index(p) + 1 if p else 0
+                    txt[r][c] = p[:4] if p else ""
+            figl = go.Figure(go.Heatmap(z=z, text=txt, texttemplate="%{text}",
+                                        colorscale=colorscale, showscale=False,
+                                        xgap=3, ygap=3, textfont=dict(size=9, color="white")))
+            for qc in quiet_cols_ix:
+                figl.add_vrect(x0=qc - 0.5, x1=qc + 0.5, line_width=2, line_dash="dot",
+                               line_color="#C9962E")
+            figl.update_layout(height=80 + rows * 38, margin=dict(l=0, r=0, t=5, b=0),
+                               yaxis=dict(autorange="reversed", showticklabels=False),
+                               xaxis=dict(showticklabels=False))
+            st.plotly_chart(figl, width="stretch", key=f"floor{f}")
 
         lc1, lc2, lc3 = st.columns(3)
-        lc1.metric("Pods used", f"{sum(pods_needed.values())} / {rows*cols}")
-        lc2.metric("Seats provisioned", f"{sum(math.ceil(d['peak_seats']/pod_seats)*pod_seats for d in res.values()):,}")
-        lc3.metric("Partition length", f"{part_ft:,.0f} linear ft")
+        lc1.metric("Pods used", f"{sum(pods_needed.values())} / {n_floors * floor_cap}")
+        lc2.metric("Seats provisioned",
+                   f"{sum(pods_needed[p] * pod_seats for p in pods_needed):,}")
+        lc3.metric("Partition length", f"{total_ft:,.0f} linear ft")
         st.caption("Gold dotted columns = quiet zone (voice excluded). Layouts are planning drafts — "
                    "fire egress, travel distances, and occupancy limits must be verified and certified "
                    "by a licensed architect before implementation.")
 
     st.download_button(
         "📊 Download full report (Excel)",
-        forecast_report(res, pods_needed, grid, part_ft, month,
+        forecast_report(res, pods_needed, grids[0] if grids else None, total_ft, month,
                         sl_pct, shrink, pod_seats, TIMES),
         file_name=f"Floorcast_Plan_Month{month}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
