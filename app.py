@@ -1,383 +1,144 @@
 """
-Floorcast — from forecast to floor plan.
+Floorcast — facility-management seat planning for contact centers.
 
-Tab 1: Seat Planner (SeatIQ) — roster-driven seat demand + bay allocation
-Tab 2: Forecast → Floor — Erlang C capacity, shift-mix, and floor layout
+Seat forecast (account × LOB × geography) + floor inventory in →
+secure floor maps, seat plan rollups, named seat assignment, and DXF out.
 
 Run:  streamlit run app.py
 """
 
-import math
+import io
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from floorcast_core.generate_roster import generate_roster, PROGRAMS
-from floorcast_core.demand_engine import compute_demand, demand_summary
-from floorcast_core.optimizer import optimize_allocation, DEFAULT_BAYS
-from floorcast_core.capacity_engine import interval_requirements, scheduled_headcount
-from floorcast_core.shift_scheduler import solve_shift_mix
-from floorcast_core.layout_engine import solve_layout
-from floorcast_core.reports import roster_report, forecast_report
 from floorcast_core.facility_engine import allocate, rollups, assign_employees, export_dxf
 
-st.set_page_config(page_title="Floorcast", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="Floorcast", page_icon="🏬", layout="wide")
+
+ACC_COLORS = ["#0B7A4B", "#E07B00", "#6D28D9", "#DC2626", "#2563EB", "#0F766E",
+              "#B45309", "#9D174D"]
 
 st.markdown(
     "<h1 style='color:#0F6B6B;margin-bottom:0'>Floorcast</h1>"
-    "<p style='color:#C9962E;font-weight:600;margin-top:0'>From forecast to floor plan.</p>",
+    "<p style='color:#C9962E;font-weight:600;margin-top:0'>"
+    "Facility-management seat planning — from seat forecast to floor map.</p>",
     unsafe_allow_html=True,
 )
+st.markdown("Give a **seat forecast** (client account × LOB × geography) and a **floor inventory**; "
+            "get seat plan rollups, security-zoned floor maps, named seat assignment, and a CAD (DXF) draft. "
+            "Accounts are **security boundaries** — dedicated contiguous zones; LOBs are open within their account.")
 
-TIMES = [f"{s//2:02d}:{(s%2)*30:02d}" for s in range(48)]
-PROG_COLORS = ["#0F6B6B", "#C9962E", "#7C3AED", "#DC2626", "#2563EB", "#059669"]
+# ────────────────────────────────────────────── inputs
+st.subheader("1 · Inputs")
+c1, c2, c3 = st.columns(3)
+fc_file = c1.file_uploader("Seat forecast CSV", type="csv",
+    help="account, lob, country, city, site, building, tower, floor(optional), seats")
+fl_file = c2.file_uploader("Floor inventory CSV", type="csv",
+    help="country, city, site, building, tower, floor, seat_rows, seat_cols")
+em_file = c3.file_uploader("Employee roster CSV (optional)", type="csv",
+    help="employee_id, employee_name, account, lob")
 
-tab1, tab2, tab3 = st.tabs(["🪑 Seat Planner (roster)", "📈 Forecast → Floor", "🏬 Facility Planner"])
+fac_fc = pd.read_csv(fc_file) if fc_file else pd.read_csv("data/sample_seat_forecast.csv")
+fac_fl = pd.read_csv(fl_file) if fl_file else pd.read_csv("data/sample_floor_inventory.csv")
+fac_em = pd.read_csv(em_file) if em_file else pd.read_csv("data/sample_employee_roster.csv")
+if not (fc_file and fl_file):
+    st.caption("Running on bundled sample data — upload your own files to replace it.")
 
-# ══════════════════════════════════════════════════════ TAB 1 — SeatIQ
-with tab1:
-    st.sidebar.header("Roster source")
-    uploaded = st.sidebar.file_uploader("Upload roster CSV", type="csv",
-        help="Columns: date, agent_id, program, channel, shift, work_mode, status")
-    try:
-        with open("data/sample_roster.csv", "rb") as f:
-            st.sidebar.download_button("⬇ Download sample roster", f,
-                file_name="sample_roster.csv", mime="text/csv",
-                help="Try the upload feature with this 50-agent sample")
-    except FileNotFoundError:
-        pass
+with st.expander("⬇ Download sample input files"):
+    s1, s2, s3 = st.columns(3)
+    for col, path, label in [(s1, "data/sample_seat_forecast.csv", "Seat forecast"),
+                             (s2, "data/sample_floor_inventory.csv", "Floor inventory"),
+                             (s3, "data/sample_employee_roster.csv", "Employee roster")]:
+        with open(path, "rb") as f:
+            col.download_button(label, f, file_name=path.split("/")[-1], mime="text/csv")
 
-    st.sidebar.header("What-if levers")
-    wfh_delta = st.sidebar.slider("WFH shift (± pct points)", -30, 30, 0, 5)
-    hiring = st.sidebar.slider("New-hire batch (agents)", 0, 300, 0, 25)
-    buffer_pct = st.sidebar.slider("Seat buffer %", 0, 20, 5, 1) / 100
+# ────────────────────────────────────────────── allocation
+floor_maps, blocks, unplaced = allocate(fac_fc, fac_fl)
+roll = rollups(blocks, fac_fl)
+asg = assign_employees(blocks, floor_maps, fac_em)
 
-    @st.cache_data
-    def load_roster(file):
-        return pd.read_csv(file) if file else generate_roster()
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Seats forecast", f"{int(fac_fc['seats'].sum()):,}")
+m2.metric("Portfolio capacity", f"{int((fac_fl['seat_rows']*fac_fl['seat_cols']).sum()):,}")
+m3.metric("Floors in plan", len(floor_maps))
+m4.metric("Employees seated", f"{int((asg['status']=='Assigned').sum()):,}")
 
-    roster = load_roster(uploaded).copy()
-    rng = np.random.default_rng(7)
+if not unplaced.empty:
+    st.error(f"{len(unplaced)} demand line(s) could not be placed — capacity exhausted. "
+             "This is Floorcast saying 'impossible' before you promise it.")
+    st.dataframe(unplaced, width="stretch", hide_index=True)
 
-    if wfh_delta != 0:
-        for prog in roster["program"].unique():
-            mask = roster["program"] == prog
-            agents = roster.loc[mask, "agent_id"].unique()
-            movers = set(rng.choice(agents, size=min(int(len(agents) * abs(wfh_delta) / 100), len(agents)), replace=False))
-            roster.loc[mask & roster["agent_id"].isin(movers), "work_mode"] = "WFH" if wfh_delta > 0 else "Office"
+# ────────────────────────────────────────────── rollups
+st.subheader("2 · Seat plan rollups")
+lvl = st.radio("Level", ["city", "site", "floor"], horizontal=True)
+if lvl in roll:
+    st.dataframe(roll[lvl], width="stretch", hide_index=True)
 
-    if hiring > 0:
-        big = roster.groupby("program")["agent_id"].nunique().idxmax()
-        tmpl = roster[roster["program"] == big]
-        shifts = tmpl["shift"].value_counts(normalize=True)
-        new = [{"date": d, "agent_id": f"NH{i:04d}", "program": big,
-                "channel": tmpl["channel"].iloc[0],
-                "shift": rng.choice(shifts.index, p=shifts.values),
-                "work_mode": "Office", "status": "Working"}
-               for i in range(hiring) for d in sorted(roster["date"].unique())]
-        roster = pd.concat([roster, pd.DataFrame(new)], ignore_index=True)
+# ────────────────────────────────────────────── floor maps
+st.subheader("3 · Floor maps (security-zoned)")
+accounts = sorted(blocks["account"].unique()) if not blocks.empty else []
+acc_cmap = {a: ACC_COLORS[i % len(ACC_COLORS)] for i, a in enumerate(accounts)}
+fkey = st.selectbox("Floor", list(floor_maps.keys()),
+                    format_func=lambda k: k.replace("|", " / "))
+grid = floor_maps[fkey]
+R, C = grid.shape
+emp_lookup = {a["seat_id"]: f"{a['employee_name']} ({a['employee_id']})"
+              for _, a in asg[asg["status"] == "Assigned"].iterrows()}
 
-    demand = compute_demand(roster)
-    summary = demand_summary(demand, roster)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Rostered agents", f"{roster['agent_id'].nunique():,}")
-    c2.metric("Peak seats needed", f"{int(summary['peak_seats'].sum()):,}")
-    c3.metric("Total bay capacity", f"{sum(b[2] for b in DEFAULT_BAYS):,}")
-    ratio = roster[roster.work_mode.eq('Office')]['agent_id'].nunique() / max(summary['peak_seats'].sum(), 1)
-    c4.metric("Blended sharing ratio", f"{ratio:.2f}")
-
-    st.subheader("Seat demand heatmap (program × time of day)")
-    day = st.selectbox("Date", sorted(demand["date"].unique()))
-    piv = demand[demand["date"] == day].pivot(index="program", columns="time", values="seats_needed")
-    fig = px.imshow(piv, aspect="auto", color_continuous_scale="Teal", labels=dict(color="Seats"))
-    fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
-    st.plotly_chart(fig, width="stretch")
-
-    st.subheader("Total seat demand vs capacity")
-    tot = demand[demand["date"] == day].groupby("time")["seats_needed"].sum().reset_index()
-    fig2 = px.area(tot, x="time", y="seats_needed")
-    fig2.add_hline(y=sum(b[2] for b in DEFAULT_BAYS), line_dash="dash",
-                   line_color="#C9962E", annotation_text="Building capacity")
-    fig2.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0))
-    st.plotly_chart(fig2, width="stretch")
-
-    st.subheader("Per-program summary")
-    st.dataframe(summary, width="stretch", hide_index=True)
-
-    st.subheader("Optimized bay allocation")
-    meta = roster.groupby("program").agg(channel=("channel", "first")).reset_index()
-    meta["dedicated"] = meta["program"].map(lambda p: PROGRAMS.get(p, {}).get("dedicated", False))
-    req = summary.merge(meta, on="program")
-    status, alloc, diag = optimize_allocation(req, buffer_pct=buffer_pct)
-
-    if status == "Optimal":
-        st.success(f"Solver: {status} · {diag['bays_used']} bays used · "
-                   f"{diag['total_seats_required']} seats placed of {diag['total_capacity']} capacity")
-        fig3 = px.bar(alloc, x="bay", y="seats", color="program", text="seats",
-                      color_discrete_sequence=PROG_COLORS)
-        caps = pd.DataFrame(DEFAULT_BAYS, columns=["bay", "floor", "cap", "quiet"])
-        fig3.add_scatter(x=caps["bay"], y=caps["cap"], mode="markers",
-                         marker_symbol="line-ew", marker_line_width=2, marker_size=30,
-                         marker_line_color="#C9962E", name="Bay capacity")
-        fig3.update_layout(height=340, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig3, width="stretch")
-        st.dataframe(alloc, width="stretch", hide_index=True)
-    else:
-        st.error(f"Solver status: {status}. Demand exceeds feasible capacity — "
-                 "raise WFH, reduce office headcount, or add bays.")
-        st.json(diag["seats_needed_by_program"])
-
-    st.download_button(
-        "📊 Download full report (Excel)",
-        roster_report(roster, demand, summary,
-                      alloc if status == "Optimal" else None, diag, day),
-        file_name=f"Floorcast_SeatPlan_{day}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="Summary · Capacity Plan · Seat Demand · Bay Plan")
-
-# ══════════════════════════════════════════════════════ TAB 2 — Forecast → Floor
-with tab2:
-    st.markdown("Give a **12-month forecast** and a **floor**; get FTE, shift mix, seat demand, "
-                "and a movable-partition layout — per month.")
-
-    st.subheader("1 · Forecast & program inputs")
-    default_programs = pd.DataFrame([
-        {"program": "CareVoice",  "daily_volume": 5200, "aht_sec": 380, "growth_pct_12m": 60, "channel": "voice",      "wfh_pct": 15},
-        {"program": "ClaimsChat", "daily_volume": 2600, "aht_sec": 540, "growth_pct_12m": 10, "channel": "chat",       "wfh_pct": 35},
-        {"program": "BillingOps", "daily_volume": 1400, "aht_sec": 420, "growth_pct_12m": 0,  "channel": "backoffice", "wfh_pct": 50},
-    ])
-    prog_df = st.data_editor(default_programs, num_rows="dynamic", width="stretch",
-        column_config={"channel": st.column_config.SelectboxColumn(options=["voice", "chat", "backoffice"])})
-
-    colA, colB, colC, colD = st.columns(4)
-    month = colA.slider("Month of horizon", 1, 12, 1)
-    sl_pct = colB.slider("Service level %", 60, 95, 80, 5) / 100
-    shrink = colC.slider("Shrinkage %", 10, 45, 30, 5) / 100
-    pod_seats = colD.slider("Seats per pod", 4, 8, 6, 1)
-
-    st.subheader("2 · Floor definition")
-    colE, colF, colG, colH = st.columns(4)
-    n_floors = colE.number_input("Number of floors", 1, 6, 1)
-    floor_sqft = colF.number_input("Usable area per floor (sq ft)", 2000, 60000, 14400, step=500)
-    seat_sqft = colG.slider("Sq ft per seat (all-in)", 35, 70, 45, 5)
-    quiet_n = colH.slider("Quiet columns (right side)", 0, 4, 2)
-
-    seats_per_floor = int(floor_sqft // seat_sqft)
-    pods_per_floor = max(1, seats_per_floor // pod_seats)
-    cols = max(4, int(math.sqrt(pods_per_floor * 1.3)))
-    rows = max(3, pods_per_floor // cols)
-    st.caption(f"Each floor: {seats_per_floor} seats ≈ {rows*cols} pods (grid {rows}×{cols}) · "
-               f"{n_floors} floor(s) · total capacity {n_floors*rows*cols*pod_seats:,} seats")
-
-    def profile(channel):
-        x = np.arange(48)
-        if channel == "backoffice":
-            p = np.where((x >= 18) & (x < 36), 1.0, 0.02)
+z = np.zeros((R, C)); txt = np.full((R, C), "", dtype=object)
+hover = np.full((R, C), "", dtype=object)
+colorscale = [[0, "#FFFFFF"]] + [[(i + 1) / max(len(accounts), 1), acc_cmap[a]]
+                                 for i, a in enumerate(accounts)]
+for r in range(R):
+    for c in range(C):
+        cell = grid[r][c]
+        if cell:
+            z[r][c] = accounts.index(cell["account"]) + 1
+            txt[r][c] = cell["lob"][:3]
+            hover[r][c] = (f"{cell['seat_id']}<br>{cell['account']} / {cell['lob']}<br>"
+                           f"{emp_lookup.get(cell['seat_id'], 'Unassigned')}")
         else:
-            p = np.exp(-0.5 * ((x - 21) / 5) ** 2) + 0.85 * np.exp(-0.5 * ((x - 31) / 5) ** 2) + 0.10
-        return p / p.sum()
+            hover[r][c] = "Empty"
+figf = go.Figure(go.Heatmap(z=z, text=txt, texttemplate="%{text}",
+                            customdata=hover, hovertemplate="%{customdata}<extra></extra>",
+                            colorscale=colorscale, showscale=False,
+                            xgap=2, ygap=2, textfont=dict(size=8, color="white")))
+figf.update_layout(height=60 + R * 30, margin=dict(l=0, r=0, t=5, b=0),
+                   yaxis=dict(autorange="reversed", showticklabels=False),
+                   xaxis=dict(showticklabels=False))
+st.plotly_chart(figf, width="stretch")
+st.caption("Color = client account (security zone) · label = LOB · hover a seat for its ID and occupant. "
+           + " · ".join(f"{a}" for a in accounts))
 
-    @st.cache_data(show_spinner="Running Erlang C + shift optimizer...")
-    def run_pipeline(prog_records, month, sl_pct, shrink):
-        results = {}
-        for r in prog_records:
-            vol = r["daily_volume"] * (1 + r["growth_pct_12m"] / 100 * (month - 1) / 11)
-            reqs = interval_requirements(vol, list(profile(r["channel"])), r["aht_sec"], sl_target=sl_pct)
-            mix, coverage = solve_shift_mix(reqs)
-            onsite = np.ceil(coverage * (1 - r["wfh_pct"] / 100)).astype(int)
-            results[r["program"]] = dict(
-                required=np.array(reqs), coverage=coverage, onsite=onsite, mix=mix,
-                scheduled=int(sum(mix.values())),
-                total_hc=scheduled_headcount(int(sum(mix.values())), shrink),
-                peak_seats=int(onsite.max()), channel=r["channel"])
-        return results
+# ────────────────────────────────────────────── assignment
+st.subheader("4 · Named seat assignment")
+st.dataframe(asg, width="stretch", hide_index=True, height=260)
+n_no = int((asg["status"] != "Assigned").sum())
+if n_no:
+    st.warning(f"{n_no} employee(s) without a seat — add capacity or increase forecast seats.")
 
-    res = run_pipeline(prog_df.to_dict("records"), month, sl_pct, shrink)
+# ────────────────────────────────────────────── exports
+st.subheader("5 · Exports")
+d1, d2 = st.columns(2)
+xbuf = io.BytesIO()
+with pd.ExcelWriter(xbuf, engine="openpyxl") as xw:
+    for name, df_ in [("Rollup City", roll.get("city")), ("Rollup Site", roll.get("site")),
+                      ("Rollup Floor", roll.get("floor")), ("Seat Blocks", blocks),
+                      ("Seat Assignment", asg)]:
+        if df_ is not None and not df_.empty:
+            df_.to_excel(xw, sheet_name=name, index=False)
+d1.download_button("📊 Seat plan report (Excel)", xbuf.getvalue(),
+    file_name="Floorcast_SeatPlan.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    help="City/site/floor rollups · seat blocks · assignment register")
+export_dxf(floor_maps, "/tmp/floorcast_plan.dxf")
+with open("/tmp/floorcast_plan.dxf", "rb") as fdxf:
+    d2.download_button("📐 CAD draft (DXF)", fdxf,
+        file_name="Floorcast_FloorPlan.dxf", mime="application/dxf",
+        help="Opens in AutoCAD — draft only")
 
-    st.subheader(f"3 · Capacity & seats — month {month}")
-    mcols = st.columns(len(res))
-    for i, (p, d) in enumerate(res.items()):
-        mcols[i].metric(p, f"{d['peak_seats']} seats",
-                        f"{d['scheduled']} sched · {d['total_hc']} HC", delta_color="off")
-
-    sel = st.selectbox("Coverage detail for program", list(res.keys()))
-    d = res[sel]
-    figc = go.Figure()
-    figc.add_scatter(x=TIMES, y=d["coverage"], fill="tozeroy", name="Scheduled (shift mix)",
-                     line=dict(color="#0F6B6B", width=0), fillcolor="rgba(15,107,107,0.25)")
-    figc.add_scatter(x=TIMES, y=d["required"], name="Erlang C requirement",
-                     line=dict(color="#C9962E", width=2.5, shape="hv"))
-    figc.add_scatter(x=TIMES, y=d["onsite"], name="On-site (after WFH)",
-                     line=dict(color="#0F6B6B", width=2, dash="dash"))
-    figc.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0),
-                       legend=dict(orientation="h", y=1.1))
-    st.plotly_chart(figc, width="stretch")
-
-    st.subheader("4 · Optimized floor layout")
-    pods_needed = {p: math.ceil(d["peak_seats"] / pod_seats) for p, d in res.items()}
-    quiet_cols_ix = list(range(cols - quiet_n, cols)) if quiet_n else []
-    voice_progs = {p for p, d in res.items() if d["channel"] == "voice"}
-
-    # greedy bin packing: largest program first, onto the emptiest floor
-    floor_cap = rows * cols
-    floor_loads = [dict() for _ in range(n_floors)]
-    floor_free = [floor_cap] * n_floors
-    feasible = True
-    for p, need in sorted(pods_needed.items(), key=lambda kv: -kv[1]):
-        f = int(np.argmax(floor_free))
-        if need > floor_free[f]:
-            feasible = False
-        else:
-            floor_loads[f][p] = need
-            floor_free[f] -= need
-
-    if not feasible:
-        st.error(f"Infeasible: {sum(pods_needed.values())} pods needed but capacity is "
-                 f"{n_floors * floor_cap} (no single program may exceed one floor). "
-                 "Add floors/area, raise WFH, or reduce volumes. "
-                 "This is Floorcast telling you 'impossible' before you promise it.")
-        grids, total_ft = [], 0
-    else:
-        grids, total_ft = [], 0
-        progs = list(res.keys())
-        cmap = {p: PROG_COLORS[i % len(PROG_COLORS)] for i, p in enumerate(progs)}
-        for f in range(n_floors):
-            if not floor_loads[f]:
-                continue
-            st.markdown(f"**Floor {f + 1}**")
-            grid, part_ft = solve_layout(rows, cols, floor_loads[f], quiet_cols_ix,
-                                         voice_progs & set(floor_loads[f]))
-            grids.append(grid)
-            total_ft += part_ft or 0
-            z = np.zeros((rows, cols)); txt = np.full((rows, cols), "", dtype=object)
-            colorscale = [[0, "#E5E7EB"]] + [[(i + 1) / len(progs), cmap[p]]
-                                             for i, p in enumerate(progs)]
-            for r in range(rows):
-                for c in range(cols):
-                    p = grid[r][c]
-                    z[r][c] = progs.index(p) + 1 if p else 0
-                    txt[r][c] = p[:4] if p else ""
-            figl = go.Figure(go.Heatmap(z=z, text=txt, texttemplate="%{text}",
-                                        colorscale=colorscale, showscale=False,
-                                        xgap=3, ygap=3, textfont=dict(size=9, color="white")))
-            for qc in quiet_cols_ix:
-                figl.add_vrect(x0=qc - 0.5, x1=qc + 0.5, line_width=2, line_dash="dot",
-                               line_color="#C9962E")
-            figl.update_layout(height=80 + rows * 38, margin=dict(l=0, r=0, t=5, b=0),
-                               yaxis=dict(autorange="reversed", showticklabels=False),
-                               xaxis=dict(showticklabels=False))
-            st.plotly_chart(figl, width="stretch", key=f"floor{f}")
-
-        lc1, lc2, lc3 = st.columns(3)
-        lc1.metric("Pods used", f"{sum(pods_needed.values())} / {n_floors * floor_cap}")
-        lc2.metric("Seats provisioned",
-                   f"{sum(pods_needed[p] * pod_seats for p in pods_needed):,}")
-        lc3.metric("Partition length", f"{total_ft:,.0f} linear ft")
-        st.caption("Gold dotted columns = quiet zone (voice excluded). Layouts are planning drafts — "
-                   "fire egress, travel distances, and occupancy limits must be verified and certified "
-                   "by a licensed architect before implementation.")
-
-    st.download_button(
-        "📊 Download full report (Excel)",
-        forecast_report(res, pods_needed, grids[0] if grids else None, total_ft, month,
-                        sl_pct, shrink, pod_seats, TIMES),
-        file_name=f"Floorcast_Plan_Month{month}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="Summary · Capacity Plan · Shift Schedule · Interval Coverage · Floor Plan")
-
-# ══════════════════════════════════════════════════════ TAB 3 — Facility Planner
-with tab3:
-    st.markdown("**Facility-management mode.** Start from a **seat forecast** (no volume, no scheduling): "
-                "account × LOB × geography in, floor maps and named seat assignments out. "
-                "Accounts are **security boundaries** (dedicated contiguous zones); LOBs are open within their account.")
-
-    c1, c2, c3 = st.columns(3)
-    fc_file = c1.file_uploader("Seat forecast CSV", type="csv", key="fac_fc",
-        help="account, lob, country, city, site, building, tower, floor(optional), seats")
-    fl_file = c2.file_uploader("Floor inventory CSV", type="csv", key="fac_fl",
-        help="country, city, site, building, tower, floor, seat_rows, seat_cols")
-    em_file = c3.file_uploader("Employee roster CSV (optional)", type="csv", key="fac_em",
-        help="employee_id, employee_name, account, lob")
-
-    fac_fc = pd.read_csv(fc_file) if fc_file else pd.read_csv("data/sample_seat_forecast.csv")
-    fac_fl = pd.read_csv(fl_file) if fl_file else pd.read_csv("data/sample_floor_inventory.csv")
-    fac_em = pd.read_csv(em_file) if em_file else pd.read_csv("data/sample_employee_roster.csv")
-    if not (fc_file and fl_file):
-        st.caption("Using bundled sample data — upload your own files to replace it.")
-
-    floor_maps, blocks, unplaced = allocate(fac_fc, fac_fl)
-    roll = rollups(blocks, fac_fl)
-
-    if not unplaced.empty:
-        st.error(f"{len(unplaced)} demand line(s) could not be placed — capacity exhausted:")
-        st.dataframe(unplaced, width="stretch", hide_index=True)
-
-    st.subheader("Seat plan rollups")
-    lvl = st.radio("Level", ["city", "site", "floor"], horizontal=True)
-    if lvl in roll:
-        st.dataframe(roll[lvl], width="stretch", hide_index=True)
-
-    st.subheader("Floor maps")
-    accounts = sorted(blocks["account"].unique()) if not blocks.empty else []
-    acc_cmap = {a: PROG_COLORS[i % len(PROG_COLORS)] for i, a in enumerate(accounts)}
-    fkey = st.selectbox("Floor", list(floor_maps.keys()),
-                        format_func=lambda k: k.replace("|", " / "))
-    grid = floor_maps[fkey]
-    R, C = grid.shape
-    z = np.zeros((R, C)); txt = np.full((R, C), "", dtype=object)
-    hover = np.full((R, C), "", dtype=object)
-    emp_lookup = {}
-    asg = assign_employees(blocks, floor_maps, fac_em)
-    for _, a in asg[asg["status"] == "Assigned"].iterrows():
-        emp_lookup[a["seat_id"]] = f"{a['employee_name']} ({a['employee_id']})"
-    colorscale = [[0, "#FFFFFF"]] + [[(i + 1) / max(len(accounts), 1), acc_cmap[a]]
-                                     for i, a in enumerate(accounts)]
-    for r in range(R):
-        for c in range(C):
-            cell = grid[r][c]
-            if cell:
-                z[r][c] = accounts.index(cell["account"]) + 1
-                txt[r][c] = cell["lob"][:3]
-                hover[r][c] = (f"{cell['seat_id']}<br>{cell['account']} / {cell['lob']}<br>"
-                               f"{emp_lookup.get(cell['seat_id'], 'Unassigned')}")
-            else:
-                hover[r][c] = "Empty"
-    figf = go.Figure(go.Heatmap(z=z, text=txt, texttemplate="%{text}",
-                                customdata=hover, hovertemplate="%{customdata}<extra></extra>",
-                                colorscale=colorscale, showscale=False,
-                                xgap=2, ygap=2, textfont=dict(size=8, color="white")))
-    figf.update_layout(height=60 + R * 30, margin=dict(l=0, r=0, t=5, b=0),
-                       yaxis=dict(autorange="reversed", showticklabels=False),
-                       xaxis=dict(showticklabels=False))
-    st.plotly_chart(figf, width="stretch")
-    st.caption("Cell color = client account (security zone) · label = LOB · hover for seat ID and "
-               "assigned employee. " + " · ".join(f"{a}: {acc_cmap[a]}" for a in accounts))
-
-    st.subheader("Named seat assignment")
-    st.dataframe(asg, width="stretch", hide_index=True, height=240)
-    n_no = int((asg["status"] != "Assigned").sum())
-    if n_no:
-        st.warning(f"{n_no} employee(s) without a seat — increase floor capacity or forecast seats.")
-
-    d1, d2 = st.columns(2)
-    import io as _io
-    xbuf = _io.BytesIO()
-    with pd.ExcelWriter(xbuf, engine="openpyxl") as xw:
-        for name, df_ in [("Rollup City", roll.get("city")), ("Rollup Site", roll.get("site")),
-                          ("Rollup Floor", roll.get("floor")), ("Seat Blocks", blocks),
-                          ("Seat Assignment", asg)]:
-            if df_ is not None and not df_.empty:
-                df_.to_excel(xw, sheet_name=name, index=False)
-    d1.download_button("📊 Download seat plan (Excel)", xbuf.getvalue(),
-        file_name="Floorcast_Facility_SeatPlan.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    export_dxf(floor_maps, "/tmp/floorcast_plan.dxf")
-    with open("/tmp/floorcast_plan.dxf", "rb") as fdxf:
-        d2.download_button("📐 Download CAD draft (DXF)", fdxf,
-            file_name="Floorcast_FloorPlan.dxf", mime="application/dxf",
-            help="Opens in AutoCAD — draft only, architect certification required")
-
-st.caption("Floorcast · reference implementation · synthetic data only — no client or employee data")
+st.caption("Floorcast · layouts are planning drafts — fire egress, travel distances, and occupancy "
+           "limits must be verified and certified by a licensed architect before implementation. "
+           "Bundled data is synthetic; no client or employee data.")
