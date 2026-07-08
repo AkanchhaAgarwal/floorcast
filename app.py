@@ -91,7 +91,7 @@ with tab1:
     st.subheader("Seat demand heatmap (program × time of day)")
     day = st.selectbox("Date", sorted(demand["date"].unique()))
     piv = demand[demand["date"] == day].pivot(index="program", columns="time", values="seats_needed")
-    fig = px.imshow(piv, aspect="auto", color_continuous_scale="Teal", labels=dict(color="Seats"))
+    fig = px.imshow(piv, aspect="auto", color_continuous_scale="RdYlGn_r", labels=dict(color="Seats"))
     fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0))
     st.plotly_chart(fig, width="stretch")
 
