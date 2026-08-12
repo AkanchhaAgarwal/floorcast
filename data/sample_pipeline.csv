@@ -1,8 +1,7 @@
 account,opportunity,country,city,site,stage,probability,month,hc
-Centene Corporation,Centene Pharma APAC,India,Kolkata,Kolkata,SIT 1: Close Oppo,0.5,2026-10,100
-Crocs,Crocs - CX Custo APAC,Vietnam,Hanoi,Hanoi,SIT 1: Close Oppo,0.5,2026-11,80
-Fetch,Fetch Tier 2 CX APAC,Vietnam,Danang,Danang,SIT 2: Solutioning,0.3,2026-11,60
-InPost UK,InPost UK Custo APAC,Indonesia,Bali,Bali,SIT 1: Close Oppo,0.5,2026-12,100
-Wayfair,Wayfair - EU digital APAC,Indonesia,Surabaya,Surabaya,SIT 3: Verbal,0.8,2026-10,150
-Zillow,Zillow - RMX Sea APAC,Thailand,Bangkok,Bangkok,SIT 1: Close Oppo,0.5,2026-12,140
-Hinge,Hinge - India Exp APAC,India,Kolkata,Kolkata,SIT 2: Solutioning,0.3,2027-01,40
+Northwind Retail,Northwind - CX APAC,India,Gurugram,Aurora Park,Stage 1: Qualified,0.3,2026-10,120
+Northwind Retail,Northwind - Back Office,India,Bengaluru,Meridian One,Stage 3: Verbal,0.8,2026-11,80
+Lakeside Health,Lakeside - Member Services,Philippines,Manila,Skyline Center,Stage 2: Solutioning,0.5,2026-11,200
+Orbit Logistics,Orbit - Tier 1 Support,Philippines,Cebu,Harbour Point,Stage 1: Qualified,0.3,2026-12,90
+Orbit Logistics,Orbit - Returns Desk,Poland,Krakow,Vistula House,Stage 3: Verbal,0.8,2026-10,60
+Cobalt Financial,Cobalt - Collections EMEA,Poland,Krakow,Vistula House,Stage 2: Solutioning,0.5,2027-01,110

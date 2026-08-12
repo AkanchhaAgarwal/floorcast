@@ -66,6 +66,51 @@ already holds — which is how a planner reads it. Gross demand is available for
 site from empty. Expansion space counts only if its renovation lands inside the horizon you
 set.
 
+## When it does not fit
+
+Options are ranked by cost, cheapest first:
+
+1. **Release trapped seats** — nobody moves
+2. **Bring a renovation forward** — nobody moves
+3. **Consolidate a fragmented account** — few moves
+4. **Relocate a small account** — moderate moves
+5. **Move partitions** — capex plus moves
+6. **Another site, or defer the ramp**
+
+Steps 3 and 4 need the optional allocations file (`site, building, floor, account, lob,
+seats`). One caveat worth stating plainly: **moving people within a site does not create
+seats** — a seat freed on one floor is consumed on another. What a move creates is
+*contiguity*: a block big enough for one client to have to itself. Where a site is
+genuinely short of seats, the answer is still steps 1, 2 or 6.
+
+The objective is **seats moved, minimised** — never utilisation. A plan that packs the
+estate perfectly by moving four hundred people is a worse answer than one that leaves
+forty seats idle and moves nobody. Options that would split an account across floors are
+flagged rather than silently taken.
+
+## Restrictions
+
+Rules that constrain where an account may sit and whether it may be moved. Supplied as
+`restrictions.csv` — `rule, subject, object, note`:
+
+| rule | means |
+|---|---|
+| `frozen` | This account must not be moved (optionally only on one floor) |
+| `dedicated` | This floor belongs to one account; no other may be placed there |
+| `no_colocate` | These two accounts must not share a floor |
+| `requires` | This account needs a floor attribute — a secure zone, an IT build |
+| `max_moves` | Ceiling on seats moved in a single plan |
+
+**Rules live in a file, not a form.** A restriction is usually contractual, and a plan
+justified by rules nobody can see is a plan nobody can check. The app therefore asks only
+the questions the files leave open — naming, for each one, the decision it affects — and
+then hands back a `restrictions.csv` so the same question is never asked twice. Answers
+given in the app apply to that session only until they are saved.
+
+Blocked options are reported with their reason rather than hidden: *"Blocked — Nimbus is
+frozen (client audit closes in March)"* is an answer a planner needs, and a silent
+omission is not.
+
 ## Zones and security
 
 The floor's own zones are the security boundaries. An account takes whole zones

@@ -1,0 +1,16 @@
+site,building,floor,account,lob,seats
+Aurora Park,Tower A,14F,Helio,Customer Care,128
+Aurora Park,Tower A,14F,Vector,Back Office,60
+Aurora Park,Tower A,14F,Nimbus,Escalations,42
+Meridian One,Block B,4F,Vector,Back Office,250
+Meridian One,Block B,4F,Nimbus,Customer Care,60
+Meridian One,Block B,5F,Vector,Back Office,120
+Meridian One,Block B,5F,Helio,Tech Support,60
+Skyline Center,Tower 2,8F,Nimbus,Customer Care,400
+Skyline Center,Tower 2,8F,Helio,Tech Support,140
+Skyline Center,Tower 2,9F,Helio,Tech Support,380
+Skyline Center,Tower 2,9F,Nimbus,Customer Care,75
+Harbour Point,Main,3F,Nimbus,Customer Care,160
+Vistula House,North,2F,Vector,Collections,90
+Vistula House,North,2F,Nimbus,Escalations,30
+Vistula House,North,3F,Vector,Collections,95

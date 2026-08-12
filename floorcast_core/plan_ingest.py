@@ -226,7 +226,7 @@ def read_plan(pdf_source, dpi=150, page_no=0):
     for s, z in zip(seats, zones):
         counter[z] += 1
         px, py = to_plot(s["x"], s["y"])
-        rows.append({"zone": z, "zone_type": "Production",
+        rows.append({"zone": z, "zone_type": zone_type_for(z),
                      "seat_id": f"{slugs[z]}-{counter[z]:03d}",
                      "x_mm": px, "y_mm": py,
                      "desk_size_mm": s["size_mm"],
@@ -265,6 +265,26 @@ def _join_with_spaces(g):
     """Spaces are real glyphs in the PDF, so the name is read back as drawn."""
     gs = sorted(g, key=lambda c: c["along"])
     return "".join(c["c"] for c in gs).strip()
+
+
+
+# Rooms whose names say they are not production floor space. Detected so the
+# user does not have to untick them by hand every time a plan is loaded — they
+# can still override it in the app.
+SUPPORT_HINTS = ("MEETING", "SERVER", "PANTRY", "QUIET", "LOCKER", "TOILET",
+                 "STORE", "RECEPTION", "HUB", "MANAGER", "CABIN", "PHONE",
+                 "WELLNESS", "MOTHER", "PRAYER", "INTERVIEW", "BOARD")
+SUPPORT_EXACT = ("IT", "HR", "IT ROOM", "HR ROOM", "MIS", "WFM")
+
+
+def zone_type_for(name: str) -> str:
+    n = str(name).strip().upper()
+    if n in SUPPORT_EXACT:
+        return "Support"
+    words = set(n.replace("-", " ").split())
+    if words & {"IT", "HR", "MIS", "WFM"}:
+        return "Support"
+    return "Support" if any(h in n for h in SUPPORT_HINTS) else "Production"
 
 
 def _slug(z):

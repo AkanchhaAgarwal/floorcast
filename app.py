@@ -18,6 +18,8 @@ from floorcast_core import estate as es
 from floorcast_core import demand_reader as dr
 from floorcast_core import seatmap_engine as sm
 from floorcast_core import floor_render as fr
+from floorcast_core import moves as mv
+from floorcast_core import restrictions as rx
 
 st.set_page_config(page_title="Floorcast", page_icon="🏬", layout="wide")
 
@@ -53,6 +55,16 @@ def load_pipeline(data):
     return dr.read_pipeline(io.BytesIO(data))
 
 
+@st.cache_data(show_spinner=False)
+def load_alloc(data):
+    return pd.read_csv(io.BytesIO(data))
+
+
+@st.cache_data(show_spinner=False)
+def load_rules(data):
+    return pd.read_csv(io.BytesIO(data))
+
+
 @st.cache_data(show_spinner="Reading the floor plan…")
 def load_plan(data, name):
     if name.lower().endswith(".csv"):
@@ -66,18 +78,32 @@ def load_plan(data, name):
 
 with st.sidebar:
     st.header("Inputs")
-    f_file = st.file_uploader("Floor inventory (CSV)", type="csv",
-                              help="geo, country, city, site, building, floor, total_seats, "
-                                   "allocated, available, trapped, trapped_reason, "
-                                   "expansion_space, expansion_eta_weeks")
-    d_file = st.file_uploader("Planning workbook (Excel)", type=["xlsx", "xls"],
-                              help="Account / LOB / Site with metric rows and one column "
-                                   "per period")
-    p_file = st.file_uploader("Sales pipeline (CSV, optional)", type="csv",
-                              help="account, site, stage, probability, month, hc")
-    plan_file = st.file_uploader("Floor plan (PDF) or seat inventory (CSV), optional",
-                                 type=["pdf", "csv"])
-    st.caption("Anything not uploaded falls back to the bundled sample estate.")
+    use_sample = st.toggle("Use sample data", value=True,
+                           help="Turn this off to plan with your own files.")
+    st.caption("Sample data is a fictional estate — nothing here is real.")
+    st.divider()
+    f_file = d_file = p_file = a_file = r_file = plan_file = None
+    if not use_sample:
+        f_file = st.file_uploader("1 · Floor inventory (CSV)", type="csv",
+                                  help="geo, country, city, site, building, floor, "
+                                       "total_seats, allocated, available, trapped, "
+                                       "trapped_reason, expansion_space, expansion_eta_weeks")
+        d_file = st.file_uploader("2 · Planning workbook (Excel)", type=["xlsx", "xls"],
+                                      help="Account / LOB / Site with metric rows and one "
+                                           "column per period")
+        p_file = st.file_uploader("3 · Sales pipeline (CSV) — optional", type="csv",
+                                          help="account, site, stage, probability, month, hc")
+        r_file = st.file_uploader("5 · Restrictions (CSV) — optional", type="csv",
+                                  help="rule, subject, object, note — frozen accounts, "
+                                       "dedicated floors, no-colocation pairs, move ceiling")
+        a_file = st.file_uploader("4 · Allocations by floor (CSV) — optional", type="csv",
+                                  help="site, building, floor, account, lob, seats — who holds "
+                                       "which seats. Unlocks consolidation and relocation options.")
+        plan_file = st.file_uploader("5 · Floor plan (PDF) — optional",
+                                     type=["pdf", "csv"],
+                                     help="A vector PDF plotted from CAD. Seats are counted "
+                                          "from the desk size annotations.")
+        st.caption("Anything left empty falls back to the sample estate.")
 
 floors_raw = load_floors(f_file.getvalue()) if f_file else \
     load_floors(open("data/sample_estate_floors.csv", "rb").read())
@@ -85,12 +111,27 @@ demand = load_demand(d_file.getvalue()) if d_file else \
     load_demand(open("data/sample_estate_demand.xlsx", "rb").read())
 pipe = load_pipeline(p_file.getvalue()) if p_file else \
     load_pipeline(open("data/sample_pipeline.csv", "rb").read())
+alloc_raw = load_alloc(a_file.getvalue()) if a_file else \
+    load_alloc(open("data/sample_allocations.csv", "rb").read())
+rules_raw = load_rules(r_file.getvalue()) if r_file else \
+    load_rules(open("data/sample_restrictions.csv", "rb").read())
 
 problems = es.validate_floors(floors_raw)
 if problems:
     st.error("Floor inventory cannot be used:\n\n" + "\n".join(f"- {p}" for p in problems))
     st.stop()
 floors = es.prepare(floors_raw)
+
+alloc_problems = mv.validate_allocations(alloc_raw, floors)
+alloc = None if alloc_problems else mv.prepare_moves(alloc_raw, floors)
+
+rule_problems = rx.validate(rules_raw)
+if rule_problems:
+    st.warning("Restrictions file ignored:\n\n" + "\n".join(f"- {p}" for p in rule_problems))
+    rules_raw = rx.empty()
+if "answered_rules" not in st.session_state:
+    st.session_state["answered_rules"] = rx.empty()
+RULES = rx.Rules(pd.concat([rules_raw, st.session_state["answered_rules"]], ignore_index=True))
 
 unknown = demand.attrs.get("unrecognised_metrics") or []
 if unknown:
@@ -101,6 +142,7 @@ tab_estate, tab_demand, tab_ramp, tab_map, tab_scen = st.tabs(
 
 # ═══════════════════════════════════════════════ 1 · ESTATE
 with tab_estate:
+    st.caption("**How much space do we have, and how much of it can we actually use?**")
     t = es.estate_totals(floors)
     c = st.columns(6)
     c[0].metric("Total seats", f"{t['total_seats']:,}")
@@ -117,9 +159,10 @@ with tab_estate:
     st.dataframe(es.rollup(floors, lvl), width="stretch", hide_index=True)
 
     st.markdown("#### Trapped seats")
-    st.caption("Seats that physically exist but cannot be used. This is usually the "
-               "largest single pool of recoverable capacity in the estate, so it is "
-               "tracked by reason rather than lumped into one number.")
+    st.caption("Seats that physically exist and are paid for, but cannot be sold to a "
+               "client — stranded inside another client's secure zone, waiting on IT, or "
+               "in a block too small to allocate. Tracked by reason, because the reason "
+               "decides whether it can be recovered.")
     tb = es.trapped_breakdown(floors)
     st.dataframe(tb, width="stretch", hide_index=True)
     rel = int(tb.loc[tb["releasable"], "seats"].sum())
@@ -130,6 +173,7 @@ with tab_estate:
 
 # ═══════════════════════════════════════════════ 2 · DEMAND
 with tab_demand:
+    st.caption("**How many seats does each client need, and when?**")
     periods = dr.week_options(demand)
     labels, sites = dr.site_options(demand)
     cc = st.columns(2)
@@ -159,6 +203,7 @@ with tab_demand:
 
 # ═══════════════════════════════════════════════ 3 · RAMP PLAN
 with tab_ramp:
+    st.caption("**Will the ramp fit, and where does it break?**")
     st.caption("Requirement against each site's floors — what fits today, what a "
                "renovation would add, and the shortfall left over.")
     r1, r2, r3 = st.columns(3)
@@ -211,9 +256,10 @@ with tab_ramp:
         st.dataframe(summ, width="stretch", hide_index=True)
 
         if not short.empty:
-            st.error(f"{len(short)} site(s) short. Options, cheapest first: release trapped "
-                     "seats on site, bring a renovation forward, spread to another site, "
-                     "or defer the ramp.")
+            st.error(f"{len(short)} site(s) short. Options, cheapest first: **1** release "
+                     "trapped seats · **2** bring a renovation forward · **3** consolidate a "
+                     "fragmented account · **4** relocate a small one · **5** move partitions · "
+                     "**6** spread to another site or defer the ramp.")
             for _, r in short.iterrows():
                 st.markdown(f"- **{r['site']}** short {int(-r['delta'])} — "
                             f"{int(r['trapped_on_site'])} trapped seats on site, "
@@ -225,8 +271,110 @@ with tab_ramp:
                                    within_weeks=horizon if use_exp else None),
                      width="stretch", hide_index=True)
 
+        # ── moving people: consolidation and relocation
+        st.markdown("##### Could moving people help?")
+        if alloc_problems:
+            st.info("Add an allocations file — who holds which seats on each floor — to see "
+                    "consolidation and relocation options.\n\n"
+                    + "\n".join(f"- {p}" for p in alloc_problems))
+        elif alloc is None or alloc.empty:
+            st.info("Add an allocations file to see consolidation and relocation options.")
+        else:
+            st.caption("Moving people **within a site does not create seats** — a seat freed on "
+                       "one floor is consumed on another. What it creates is a block big enough "
+                       "for one client to have to itself. Options are ranked by seats moved, "
+                       "because every move is an IT task and a weekend.")
+            mc1, mc2 = st.columns([1, 1])
+            msite = mc1.selectbox("Site to rearrange", sorted(alloc["site"].unique()), key="mv_site")
+            default_need = int(abs(summ.loc[summ["site"] == msite, "delta"].sum())) if msite in set(summ["site"]) else 0
+            block = mc2.number_input("Contiguous block wanted (seats)", min_value=1, max_value=2000,
+                                     value=max(default_need, 60), step=10, key="mv_block")
+
+            frag = mv.fragmentation(alloc[alloc["site"] == msite])
+            cap = RULES.max_moves
+            opts = mv.relocation_options(alloc, int(block), msite, max_moves=cap, rules=RULES)
+            cons = mv.consolidation_options(alloc, rules=RULES)
+            cons = cons[cons["site"] == msite] if not cons.empty else cons
+            if cap:
+                st.caption(f"Options above the {cap}-seat move ceiling are hidden.")
+
+            t_a, t_b, t_c, t_d = st.tabs(["Open a block (step 4)", "Consolidate (step 3)",
+                                          "Fragmentation", "Restrictions"])
+            with t_a:
+                if opts.empty:
+                    st.info("No floor at this site could open a block that size, even if it were "
+                            "emptied. This is a capacity problem, not a layout one.")
+                else:
+                    best = mv.move_cost_summary(opts)
+                    if best.get("workable"):
+                        st.success(f"Cheapest option: move **{best['cheapest_moves']} seats** "
+                                   f"({best['accounts']}) to open **{best['block_opened']} "
+                                   f"contiguous seats** on {best['floor']}.")
+                    else:
+                        st.warning("Every option needs somewhere for the movers to go, and this "
+                                   "site has no room elsewhere. Look at trapped seats or another site.")
+                    st.dataframe(opts, width="stretch", hide_index=True)
+            with t_b:
+                if cons.empty:
+                    st.info("No account at this site is split across floors.")
+                else:
+                    st.dataframe(cons, width="stretch", hide_index=True)
+                    doable = cons[cons["action"] == "Consolidate"]
+                    if not doable.empty:
+                        r = doable.iloc[0]
+                        st.success(f"**{r['account']}** can be consolidated onto {r['to']} by "
+                                   f"moving {int(r['seats_moved'])} seats — freeing the same "
+                                   "number as one contiguous block.")
+            with t_c:
+                if frag.empty:
+                    st.success("No account at this site is spread across more than one floor.")
+                else:
+                    st.dataframe(frag, width="stretch", hide_index=True)
+                    st.caption("An account on several floors is harder to grow and harder to "
+                               "segregate. The smallest block is usually the cheapest to move.")
+            with t_d:
+                st.caption("Rules the options above obey. Anything the files already answer is "
+                           "not asked again — and what you answer here can be saved as a file so "
+                           "it becomes an input next time, reviewable by someone other than you.")
+                have = RULES.summary()
+                if have.empty:
+                    st.info("No restrictions in force — every account is treated as movable and "
+                            "every floor as shared.")
+                else:
+                    st.dataframe(have, width="stretch", hide_index=True)
+
+                qs = rx.open_questions(alloc, floors, RULES)
+                if not qs:
+                    st.success("The files answer every question the planner needs.")
+                else:
+                    st.markdown(f"**{len(qs)} question(s) the files leave open**")
+                    ans = {}
+                    for q in qs[:8]:
+                        cq, ca = st.columns([3, 1])
+                        cq.markdown(f"{q['question']}  \n*{q['affects']}*")
+                        if q["rule"] == "max_moves":
+                            pick = ca.number_input("seats", min_value=0, max_value=2000, value=0,
+                                                   step=10, key="q_" + q["key"],
+                                                   label_visibility="collapsed")
+                            ans[q["key"]] = pick
+                        else:
+                            ans[q["key"]] = ca.radio("answer", q["options"], horizontal=False,
+                                                     key="q_" + q["key"],
+                                                     label_visibility="collapsed")
+                    new_rules = rx.answers_to_rules(ans, qs)
+                    b1, b2 = st.columns(2)
+                    if b1.button("Apply these answers", width="stretch"):
+                        st.session_state["answered_rules"] = new_rules
+                        st.rerun()
+                    if not new_rules.empty:
+                        b2.download_button("Save as restrictions.csv",
+                                           new_rules.to_csv(index=False).encode(),
+                                           file_name="restrictions.csv", mime="text/csv",
+                                           width="stretch")
+
 # ═══════════════════════════════════════════════ 4 · FLOOR MAP
 with tab_map:
+    st.caption("**Which client sits in which seat?**")
     if plan_file is not None:
         plan = load_plan(plan_file.getvalue(), plan_file.name)
     else:
@@ -249,7 +397,13 @@ with tab_map:
                                           suggested=("zone_type", "first")).reset_index()
                 .sort_values("seats", ascending=False))
         zsum["Allocate"] = zsum["suggested"].str.lower().eq("production")
-        with st.expander("Zones on this floor — untick any that should not take production demand"):
+        n_prod = int(zsum.loc[zsum["Allocate"], "seats"].sum())
+        n_supp = int(zsum.loc[~zsum["Allocate"], "seats"].sum())
+        supp_names = ", ".join(zsum.loc[~zsum["Allocate"], "zone"].head(4))
+        with st.expander(f"Zones — {n_prod} production seats"
+                         + (f", {n_supp} held back as support ({supp_names})" if n_supp else "")):
+            st.caption("Meeting rooms, IT and HR rooms and manager cabins are recognised from "
+                       "their names and held out of the pool. Tick or untick to override.")
             edited = st.data_editor(zsum[["zone", "seats", "Allocate"]], hide_index=True,
                                     width="stretch", disabled=["zone", "seats"],
                                     key="zone_ed")
@@ -259,7 +413,18 @@ with tab_map:
         g1, g2, g3 = st.columns(3)
         level = g1.radio("Colour by", ["Account", "LOB"], horizontal=True)
         labels2, sites2 = dr.site_options(demand)
-        spick = g2.selectbox("Demand for", ["All sites"] + labels2, key="map_site")
+        # start on the site whose demand best matches this floor, so the first
+        # thing the user sees is a map that makes sense
+        pk_all = dr.peak_week(demand)
+        fit = {}
+        for lb, sname in zip(labels2, sites2):
+            n = int(dr.slice_week(demand, pk_all, sname)["seats"].sum())
+            fit[lb] = abs(n - prod_cap)
+        best = min(fit, key=fit.get) if fit else None
+        opts = labels2 + ["All sites"]
+        spick = g2.selectbox("This floor holds demand for", opts,
+                             index=opts.index(best) if best in opts else 0,
+                             key="map_site")
         msite = None if spick == "All sites" else sites2[labels2.index(spick)]
         mperiod = g3.select_slider("Period", options=dr.week_options(demand),
                                    value=dr.peak_week(demand, msite), key="map_period")
@@ -275,6 +440,13 @@ with tab_map:
             assigned, blocks, unplaced = sm.allocate_seats(sl, seats,
                                                            allocatable_zones=allocatable)
             need_here = int(sl["seats"].sum())
+            if need_here > prod_cap * 1.2:
+                st.warning(
+                    f"**{spick} needs {need_here:,} seats but this floor holds {prod_cap:,}.** "
+                    "Demand is for the whole site, and a site usually has several floors, so "
+                    "the first client fills the plan and the rest have nowhere to go — which "
+                    "is why the map comes out one colour. Choose an earlier period, or a site "
+                    "sized to this floor. The Ramp plan tab is where the shortfall belongs.")
             q = st.columns(4)
             q[0].metric("Seats required", f"{need_here:,}")
             q[1].metric("Production seats", f"{prod_cap:,}")
@@ -328,6 +500,7 @@ with tab_map:
 
 # ═══════════════════════════════════════════════ 5 · SCENARIOS
 with tab_scen:
+    st.caption("**What are our options when it does not fit?**")
     st.markdown("#### Release trapped seats")
     st.caption("What the estate looks like if trapped seats are recovered — a partition "
                "move, an IT rollout, a relocation, or finishing a renovation.")
