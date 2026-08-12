@@ -1,0 +1,12 @@
+geo,country,city,site,building,floor,total_seats,allocated,available,trapped,trapped_reason,expansion_space,expansion_eta_weeks,programs,notes
+India,India,Kolkata,Kolkata,Tower A,3F,335,335,0,45,layout,0,,TNS,
+Indonesia,Indonesia,Bali,Bali,Taman Dewata,2F,1041,865,176,367,segregation,350,8,"TNS, MI",ETA for renovation 8 weeks
+Indonesia,Indonesia,Surabaya,Surabaya,VOZA,22F,219,95,124,38,layout,0,,TNS,
+Indonesia,Indonesia,Surabaya,Surabaya,VOZA,23F,219,94,125,38,it_not_ready,0,,TNS,
+Thailand,Thailand,Bangkok,Bangkok,R House,9F,634,634,0,190,segregation,0,,TNS,
+Thailand,Thailand,Bangkok,Bangkok,R House,10F,236,236,0,113,under_renovation,190,6,"TNS, MI",ETA for renovation 1.5 month
+Vietnam,Vietnam,Hanoi,Hanoi,Tower 1,4F,227,108,119,60,segregation,0,,"V2, MI",
+Vietnam,Vietnam,Hanoi,Hanoi,VTC,9F,249,249,0,45,layout,0,,TNS,
+Vietnam,Vietnam,Hanoi,Hanoi,VTC,7F,247,247,0,46,contractual_hold,0,,"TNS, TL, Udemy",
+Vietnam,Vietnam,Danang,Danang,Tower A,4F,392,310,82,22,it_not_ready,0,,TNS,
+Vietnam,Vietnam,Danang,Danang,Tower A,5F,419,226,193,27,layout,0,,"TNS, Expansion area",
