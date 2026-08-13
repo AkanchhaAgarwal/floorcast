@@ -28,47 +28,60 @@ from floorcast_core import plan_library as pl
 
 st.set_page_config(page_title="Floorcast", page_icon="🏬", layout="wide")
 
-SAMPLES = [
-    ("Floor inventory", "1 · required", "data/sample_estate_floors.csv",
-     "floor_inventory.csv", "text/csv",
-     "One row per floor — seats, allocated, available, trapped, expansion"),
-    ("Planning workbook", "2 · required", "data/sample_estate_demand.xlsx",
-     "planning_workbook.xlsx",
-     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-     "Account x LOB x site, one column per period"),
-    ("Deals not yet won", "3 · optional", "data/sample_pipeline.csv",
-     "pipeline.csv", "text/csv",
-     "New business sales is chasing, with how likely each is"),
-    ("Allocations by floor", "4 · optional", "data/sample_allocations.csv",
-     "allocations.csv", "text/csv",
+TEMPLATES = [
+    ("Floor inventory", "1 · required", "floor_inventory.csv", "csv",
+     ["geo", "country", "city", "site", "building", "floor", "total_seats", "allocated",
+      "available", "trapped", "trapped_reason", "expansion_space", "expansion_eta_weeks",
+      "programs", "notes"],
+     "One row per floor — seats split into allocated, available and unusable"),
+    ("Planning workbook", "2 · required", "planning_workbook.xlsx", "xlsx",
+     ["Account", "LOB", "Country", "City", "Site", "Metric"],
+     "Account x LOB x site, a metric row each, one column per period"),
+    ("Deals not yet won", "3 · optional", "deals_not_yet_won.csv", "csv",
+     ["account", "opportunity", "country", "city", "site", "stage", "probability",
+      "month", "hc"],
+     "New business being chased, with how likely each is to close"),
+    ("Allocations by floor", "4 · optional", "allocations.csv", "csv",
+     ["site", "building", "floor", "account", "lob", "seats"],
      "Who holds which seats — unlocks consolidation and relocation"),
-    ("Restrictions", "5 · optional", "data/sample_restrictions.csv",
-     "restrictions.csv", "text/csv",
-     "Frozen accounts, dedicated floors, no-colocation pairs"),
-    ("Floor plan (PDF)", "6 · optional", "data/sample_floor_plan.pdf",
-     "floor_plan.pdf", "application/pdf",
-     "A vector CAD plot — unlocks the coloured floor map"),
+    ("Restrictions", "5 · optional", "restrictions.csv", "csv",
+     ["rule", "subject", "object", "note"],
+     "frozen · dedicated · no_colocate · requires · max_moves"),
 ]
+
+
+def _template_bytes(kind, cols):
+    """A blank file with the right headers. A new account needs a template, not
+    somebody else's numbers to delete."""
+    if kind == "csv":
+        return (",".join(cols) + "\n").encode()
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    wb = Workbook(); ws = wb.active; ws.title = "Demand"
+    ws.append([None] * len(cols) + ["2026-09-01", "2026-10-01", "2026-11-01"])
+    ws.append(cols + [None, None, None])
+    for c in ws[2]:
+        if c.value:
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="1F3864")
+    for metric in ("HC Forecast", "Seat Ratio", "Seats Required"):
+        ws.append([None] * (len(cols) - 1) + [metric])
+    buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
 
 
 @st.cache_data(show_spinner=False)
 def sample_bundle() -> bytes:
-    """Every sample in one zip, so a new user gets a working set in one click."""
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for _, _, path, fname, _, _ in SAMPLES:
-            try:
-                z.write(path, arcname=fname)
-            except FileNotFoundError:
-                pass
+        for name, tag, fname, kind, cols, desc in TEMPLATES:
+            z.writestr(fname, _template_bytes(kind, cols))
         z.writestr("README.txt",
-                   "Floorcast sample input files\n"
-                   "============================\n\n"
-                   "Use these as templates: replace the contents, keep the column names.\n\n"
-                   + "\n".join(f"{n:22} {fn:24} {d}" for n, _, _, fn, _, d in SAMPLES))
+                   "Floorcast input templates\n=========================\n\n"
+                   "Fill these in and upload them from the sidebar. Keep the column "
+                   "names; the order does not matter.\n\n"
+                   + "\n".join(f"{n:22} {f:26} {d}" for n, t, f, k, c, d in TEMPLATES))
     return buf.getvalue()
-
 
 
 def _xlsx(sheets: dict) -> bytes:
@@ -152,12 +165,9 @@ def load_plan(data, name):
 
 with st.sidebar:
     st.header("Inputs")
-    use_sample = st.toggle("Use sample data", value=True,
-                           help="Turn this off to plan with your own files.")
-    st.caption("Sample data is a fictional estate — nothing here is real.")
+    st.caption("Upload your files. Nothing is kept between sessions.")
     st.divider()
-    f_file = d_file = p_file = a_file = r_file = plan_file = None
-    if not use_sample:
+    if True:
         f_file = st.file_uploader("1 · Floor inventory (CSV)", type="csv",
                                   help="geo, country, city, site, building, floor, "
                                        "total_seats, allocated, available, trapped, "
@@ -179,32 +189,75 @@ with st.sidebar:
                                           "site and demand is placed across its floors at once. "
                                           "Name files like SITE-CODE_05F.pdf, or the drawing's "
                                           "own title block is read.")
-        st.caption("Anything left empty falls back to the sample estate.")
+        st.caption("The two required files get you a working plan.")
 
     st.divider()
-    with st.expander("⬇ Sample input files", expanded=True):
-        st.caption("Templates — replace the contents, keep the column names.")
-        st.download_button("📦 All six files (.zip)", sample_bundle(),
-                           file_name="floorcast_sample_inputs.zip", mime="application/zip",
+    with st.expander("⬇ Blank templates", expanded=True):
+        st.caption("Empty files with the right column names.")
+        st.download_button("📦 All templates (.zip)", sample_bundle(),
+                           file_name="floorcast_templates.zip", mime="application/zip",
                            width="stretch", key="dl_bundle_side")
-        for label, tag, path, fname, mime, _ in SAMPLES:
-            try:
-                with open(path, "rb") as fh:
-                    st.download_button(f"{label}", fh.read(), file_name=fname, mime=mime,
-                                       width="stretch", key="dl_" + fname)
-            except FileNotFoundError:
-                pass
+        for name, tag, fname, kind, cols, desc in TEMPLATES:
+            st.download_button(name, _template_bytes(kind, cols), file_name=fname,
+                               mime="text/csv" if kind == "csv" else
+                               "application/vnd.openxmlformats-officedocument."
+                               "spreadsheetml.sheet",
+                               width="stretch", key="dl_" + fname)
 
-floors_raw = load_floors(f_file.getvalue()) if f_file else \
-    load_floors(open("data/sample_estate_floors.csv", "rb").read())
-demand = load_demand(d_file.getvalue()) if d_file else \
-    load_demand(open("data/sample_estate_demand.xlsx", "rb").read())
-pipe = load_pipeline(p_file.getvalue()) if p_file else \
-    load_pipeline(open("data/sample_pipeline.csv", "rb").read())
-alloc_raw = load_alloc(a_file.getvalue()) if a_file else \
-    load_alloc(open("data/sample_allocations.csv", "rb").read())
-rules_raw = load_rules(r_file.getvalue()) if r_file else \
-    load_rules(open("data/sample_restrictions.csv", "rb").read())
+def _bundled(path, loader):
+    """Load a bundled sample if one happens to be present. Nothing is bundled by
+    default — the app starts empty, the way a new account does."""
+    try:
+        with open(path, "rb") as fh:
+            return loader(fh.read())
+    except FileNotFoundError:
+        return None
+
+
+floors_raw = load_floors(f_file.getvalue()) if f_file \
+    else _bundled("data/sample_estate_floors.csv", load_floors)
+demand = load_demand(d_file.getvalue()) if d_file \
+    else _bundled("data/sample_estate_demand.xlsx", load_demand)
+pipe = load_pipeline(p_file.getvalue()) if p_file \
+    else _bundled("data/sample_pipeline.csv", load_pipeline)
+alloc_raw = load_alloc(a_file.getvalue()) if a_file \
+    else _bundled("data/sample_allocations.csv", load_alloc)
+rules_raw = load_rules(r_file.getvalue()) if r_file \
+    else _bundled("data/sample_restrictions.csv", load_rules)
+if pipe is None:
+    pipe = pd.DataFrame(columns=["account", "site", "probability", "month", "hc"])
+if alloc_raw is None:
+    alloc_raw = pd.DataFrame(columns=["site", "building", "floor", "account", "lob", "seats"])
+if rules_raw is None:
+    rules_raw = rx.empty()
+
+# ── nothing loaded yet: show the setup screen and stop
+if floors_raw is None or demand is None:
+    from floorcast_core import onboarding as ob
+    have = {"floors": 0 if floors_raw is None else len(floors_raw),
+            "demand": 0 if demand is None else len(demand),
+            "allocations": len(alloc_raw), "restrictions": len(rules_raw),
+            "deals": len(pipe), "plans": 0}
+    prog = ob.progress(have)
+
+    st.subheader("Set up your estate")
+    st.markdown(ob.next_step(have))
+    st.progress(prog["required_done"] / max(prog["required_total"], 1))
+    st.caption(f"{prog['required_done']} of {prog['required_total']} required inputs loaded. "
+               "Turn off **Use sample data** in the sidebar to upload your files.")
+    st.dataframe(ob.checklist(have), width="stretch", hide_index=True)
+    st.info("Two files get you a working plan: the **floor inventory** and the "
+            "**planning workbook**. The other four add capability and can follow later.")
+    with st.expander("What each file needs to contain"):
+        for spec in ob.INPUTS:
+            if not spec["columns"]:
+                continue
+            st.markdown(f"**{spec['name']}** — "
+                        + ("required" if spec["required"] else "optional")
+                        + "  \n`" + ", ".join(spec["columns"]) + "`"
+                        + (f"  \noptional: `{', '.join(spec['optional_columns'])}`"
+                           if spec["optional_columns"] else ""))
+    st.stop()
 
 problems = es.validate_floors(floors_raw)
 if problems:
@@ -229,7 +282,7 @@ def load_os_cached(data):
 try:
     os_src = load_os_cached(open("data/sample_one_source.xlsx", "rb").read())
 except Exception:
-    os_src = None
+    os_src = None      # nothing bundled — the Data quality tab asks for a file
 
 RULES = rx.Rules(pd.concat([rules_raw, st.session_state["answered_rules"]], ignore_index=True))
 
@@ -237,23 +290,20 @@ unknown = demand.attrs.get("unrecognised_metrics") or []
 if unknown:
     st.warning("Metric rows not recognised and ignored: " + ", ".join(map(str, unknown)))
 
-with st.expander("⬇ Sample input files — templates you can download and edit", expanded=False):
-    st.caption("The app is running on these right now. Replace the contents, keep the column "
-               "names, and upload them from the sidebar.")
-    st.download_button("📦 Download all six as a zip", sample_bundle(),
-                       file_name="floorcast_sample_inputs.zip", mime="application/zip",
+with st.expander("⬇ Blank templates — the columns each file needs", expanded=False):
+    st.caption("Empty files with the right headers. Fill them in and upload from the sidebar.")
+    st.download_button("📦 Download all templates", sample_bundle(),
+                       file_name="floorcast_templates.zip", mime="application/zip",
                        key="dl_bundle_main")
-    dcols = st.columns(3)
-    for i, (label, tag, path, fname, mime, desc) in enumerate(SAMPLES):
-        c = dcols[i % 3]
-        c.markdown(f"**{label}**  \n<span style='color:#5B6B6B;font-size:0.82em'>{tag} — {desc}"
+    tcols = st.columns(3)
+    for i, (name, tag, fname, kind, cols, desc) in enumerate(TEMPLATES):
+        c = tcols[i % 3]
+        c.markdown(f"**{name}**  \n<span style='color:#5B6B6B;font-size:0.82em'>{tag} — {desc}"
                    "</span>", unsafe_allow_html=True)
-        try:
-            with open(path, "rb") as fh:
-                c.download_button("Download", fh.read(), file_name=fname, mime=mime,
-                                  width="stretch", key="dlm_" + fname)
-        except FileNotFoundError:
-            c.caption("not bundled")
+        c.download_button("Download", _template_bytes(kind, cols), file_name=fname,
+                          mime="text/csv" if kind == "csv" else
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                          width="stretch", key="dlm_" + fname)
 
 tab_role, tab_what, tab_estate, tab_demand, tab_ramp, tab_map, tab_scen, tab_qa = st.tabs(
     ["👥 My view", "🎛 What if", "🏢 Estate", "📈 Demand", "🎯 Ramp plan", "🗺 Floor map",

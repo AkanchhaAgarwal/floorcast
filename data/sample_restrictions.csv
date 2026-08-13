@@ -1,5 +1,0 @@
-rule,subject,object,note
-frozen,Client C,,"Client audit closes in March, no moves before then"
-dedicated,05F,Client A,APA-MNL-01 floor 05F is contractually Client A's
-no_colocate,Client A,Client B,"Competing programmes, must not share a floor"
-max_moves,plan,150,Facilities can lift 150 seats in one weekend
