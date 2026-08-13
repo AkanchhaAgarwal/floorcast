@@ -57,6 +57,12 @@ ROLES = {
         "cares": "Their own footprint, headroom beside it, segregation assurance",
         "action": "Confirm the footprint, or ask for the growth to be reserved",
     },
+    "Finance": {
+        "icon": "💷",
+        "question": "What is the space costing, and what is it earning?",
+        "cares": "Seats paid for against seats used, space held but idle, renovation spend",
+        "action": "Approve the spend, or recover the cost from an under-used floor",
+    },
     "PMO": {
         "icon": "📋",
         "question": "Is the plan complete, and who is holding it up?",
@@ -270,3 +276,27 @@ def client_safe_view(alloc: pd.DataFrame, floors: pd.DataFrame, account: str,
         "shares_with": [],
     }
 
+
+def finance(floors: pd.DataFrame, alloc: pd.DataFrame, totals: dict,
+            over_contracted: pd.DataFrame = None) -> dict:
+    """The commercial read on the estate.
+
+    Every unusable seat is rent against no revenue, and every floor held but
+    half-used is the same thing wearing a contract. Neither shows up in an
+    occupancy number, which is why finance asks a different question from
+    operations.
+    """
+    tot = max(totals.get("total_seats", 0), 1)
+    trapped = totals.get("trapped", 0)
+    idle = int(over_contracted["recoverable"].sum()) if over_contracted is not None \
+        and not over_contracted.empty else 0
+    exp = int(floors["expansion_space"].sum()) if "expansion_space" in floors.columns else 0
+    return {
+        "Seats paid for": f"{tot:,}",
+        "Unusable, still paid for": f"{trapped:,}",
+        "Share of estate earning nothing": f"{trapped / tot * 100:.1f}%",
+        "Held but barely used": f"{idle:,}",
+        "Renovation in the plan": f"{exp:,}",
+        "_recoverable": trapped + idle,
+        "_recoverable_pct": round((trapped + idle) / tot * 100, 1),
+    }

@@ -104,6 +104,35 @@ def rollup(d: pd.DataFrame, level="site") -> pd.DataFrame:
     return g.sort_values("total_seats", ascending=False)
 
 
+def with_utilisation(rolled: pd.DataFrame, demand: pd.DataFrame, period: str,
+                     level: str = "site") -> pd.DataFrame:
+    """Add utilisation alongside occupancy.
+
+    They answer different questions and are easy to conflate. **Occupancy** is
+    how much of the building has been handed out. **Utilisation** is how much of
+    what was handed out is genuinely needed. A site can be fully occupied and
+    poorly utilised — every seat assigned, half of them not required — and that
+    is exactly the case worth finding.
+    """
+    if rolled is None or rolled.empty or demand is None or demand.empty:
+        return rolled
+    if "Site" not in demand.columns or level not in rolled.columns:
+        return rolled
+    need = demand[demand["week"] == period].groupby("Site")["seats"].sum()
+    out = rolled.copy()
+    if level == "site":
+        out["required"] = out[level].map(need).fillna(0).astype(int)
+    else:
+        return out
+    out["utilisation_%"] = np.where(out["allocated"] > 0,
+                                    (out["required"] / out["allocated"] * 100).round(1), np.nan)
+    out["verdict"] = np.where(out["utilisation_%"].isna(), "",
+                              np.where(out["utilisation_%"] < 80, "Holding more than needed",
+                                       np.where(out["utilisation_%"] > 105, "Needs more space",
+                                                "About right")))
+    return out
+
+
 def estate_totals(d: pd.DataFrame) -> dict:
     t = int(d["total_seats"].sum())
     a = int(d["allocated"].sum())
