@@ -1,7 +1,0 @@
-account,opportunity,country,city,site,stage,probability,month,hc
-Client A,Client A - CX expansion,Thailand,Bangkok,APA-BKK-02,Stage 3: Verbal,0.8,2026-11,180
-Client B,Client B - back office,Portugal,Lisbon,EME-LIS-02,Stage 2: Solutioning,0.5,2026-12,220
-Client C,Client C - collections,Mexico,Guadalajara,AME-GDL-02,Stage 1: Qualified,0.3,2027-01,150
-Client A,Client A - night shift,Colombia,Bogota,AME-BOG-02,Stage 2: Solutioning,0.5,2026-11,90
-Client B,Client B - Cairo growth,Egypt,Cairo,EME-CAI-01,Stage 3: Verbal,0.8,2026-10,120
-Client C,Client C - Manila pilot,Philippines,Manila,APA-MNL-01,Stage 1: Qualified,0.3,2027-02,200
