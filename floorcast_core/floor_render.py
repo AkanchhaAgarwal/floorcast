@@ -97,3 +97,70 @@ def render_floor_map(seats, background=None, extent=None, level="account",
     fig.savefig(pdf, format="pdf", facecolor="white", bbox_inches="tight")
     plt.close(fig)
     return png.getvalue(), pdf.getvalue()
+
+
+# ────────────────────────────── live, interactive version
+def plotly_map(seats, background=None, extent=None, level="account",
+               title="", desk_w=900, desk_d=700):
+    """An interactive floor map for the what-if dashboard.
+
+    The static renderer above produces a picture to print. This one produces a
+    figure that redraws in a fraction of a second when a lever moves, and lets
+    the planner hover a seat to see who holds it. Same colours, same allocation —
+    a different job.
+    """
+    import plotly.graph_objects as go
+
+    col = "account" if level == "account" else "lob"
+    seats = seats.copy()
+    if col not in seats.columns:
+        seats[col] = None
+    cmap = colour_map(seats[col].dropna().tolist())
+
+    fig = go.Figure()
+    if background is not None and extent is not None:
+        from PIL import Image
+        img = Image.fromarray(background.astype("uint8"))
+        fig.add_layout_image(dict(source=img, xref="x", yref="y",
+                                  x=extent[0], y=extent[3],
+                                  sizex=extent[1] - extent[0],
+                                  sizey=extent[3] - extent[2],
+                                  sizing="stretch", opacity=1.0, layer="below"))
+
+    free = seats[seats[col].isna()]
+    if not free.empty:
+        fig.add_trace(go.Scatter(
+            x=free["x_mm"], y=free["y_mm"], mode="markers", name="Unallocated",
+            marker=dict(size=9, color=UNALLOCATED, symbol="square",
+                        line=dict(width=0.6, color="#9E9E9E")),
+            customdata=free[["seat_id", "zone"]].values,
+            hovertemplate="%{customdata[0]}<br>Zone %{customdata[1]}"
+                          "<br>Unallocated<extra></extra>"))
+
+    for name, grp in seats[seats[col].notna()].groupby(col):
+        fig.add_trace(go.Scatter(
+            x=grp["x_mm"], y=grp["y_mm"], mode="markers",
+            name=f"{name} ({len(grp)})",
+            marker=dict(size=9, color=cmap.get(name, "#888888"), symbol="square",
+                        line=dict(width=0.6, color="white")),
+            customdata=grp[["seat_id", "zone"]].values,
+            hovertemplate="%{customdata[0]}<br>Zone %{customdata[1]}<br>"
+                          + str(name) + "<extra></extra>"))
+
+    for z, g in seats.groupby("zone"):
+        fig.add_annotation(x=g["x_mm"].mean(), y=g["y_mm"].max() + 1400, text=str(z),
+                           showarrow=False, font=dict(size=10, color="#444444"),
+                           bgcolor="rgba(255,255,255,0.75)")
+
+    if extent:
+        fig.update_xaxes(range=[extent[0], extent[1]])
+        fig.update_yaxes(range=[extent[2], extent[3]])
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14)) if title else None,
+        height=560, margin=dict(l=0, r=0, t=34 if title else 6, b=0),
+        legend=dict(orientation="h", y=-0.04),
+        xaxis=dict(showticklabels=False, showgrid=False, zeroline=False, visible=False),
+        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, visible=False,
+                   scaleanchor="x", scaleratio=1),
+        plot_bgcolor="white", dragmode="pan", uirevision="floormap")
+    return fig

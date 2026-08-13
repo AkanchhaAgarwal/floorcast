@@ -171,7 +171,7 @@ PIPELINE_COLS = ["account", "site", "probability", "month", "hc"]
 
 
 def read_pipeline(path_or_buf) -> pd.DataFrame:
-    """The SIT funnel: opportunities that are not yet committed demand."""
+    """Deals sales is chasing but has not signed — demand that may or may not arrive."""
     p = pd.read_csv(path_or_buf) if not hasattr(path_or_buf, "read") else pd.read_csv(path_or_buf)
     p.columns = [str(c).strip().lower() for c in p.columns]
     missing = [c for c in PIPELINE_COLS if c not in p.columns]
@@ -183,10 +183,11 @@ def read_pipeline(path_or_buf) -> pd.DataFrame:
 
 
 def pipeline_seats(pipe: pd.DataFrame, mode="weighted", seat_ratio=1.2) -> pd.DataFrame:
-    """mode: 'exclude' | 'weighted' (hc x probability) | 'full' (as if all land).
+    """mode: 'exclude' (signed business only) | 'weighted' (hc x how likely) |
+    'full' (as if every deal is won).
 
-    Weighted is the planning view; full is the stress test — the estate has to be
-    able to answer 'what if every one of these closes'."""
+    Weighted is what you plan against; full is the stress test — the estate needs
+    an answer to 'what if we win everything'."""
     p = pipe.copy()
     if mode == "exclude":
         p["hc_scenario"] = 0.0

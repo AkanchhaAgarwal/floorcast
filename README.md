@@ -66,6 +66,25 @@ already holds — which is how a planner reads it. Gross demand is available for
 site from empty. Expansion space counts only if its renovation lands inside the horizon you
 set.
 
+## What if
+
+The files are loaded once. After that the **What if** tab is a live dashboard: move a lever
+and the whole picture recomputes, with the change against baseline shown on every number.
+
+Levers compose, which is the point — "release half the trapped seats **and** assume volumes
+land 15% above plan **and** count the pipeline" is one question, not three.
+
+| Lever | What it asks |
+|---|---|
+| Period | Which month or week are we planning against |
+| Demand vs plan | What if volumes land above or below forecast |
+| Trapped seats | Which reasons do we assume recovered, and how much of the pool |
+| Renovation | Does expansion space count, and how soon must it land |
+| Pipeline | Ignore unclosed demand, weight it by probability, or take all of it |
+
+Scenarios can be named and saved, then compared side by side against the same baseline, so
+the difference between two answers is real rather than an artefact of what was loaded when.
+
 ## When it does not fit
 
 Options are ranked by cost, cheapest first:

@@ -20,8 +20,54 @@ from floorcast_core import seatmap_engine as sm
 from floorcast_core import floor_render as fr
 from floorcast_core import moves as mv
 from floorcast_core import restrictions as rx
+from floorcast_core import scenario as sc
+from floorcast_core import onesource as os1
+from floorcast_core import roles as rl
 
 st.set_page_config(page_title="Floorcast", page_icon="🏬", layout="wide")
+
+SAMPLES = [
+    ("Floor inventory", "1 · required", "data/sample_estate_floors.csv",
+     "floor_inventory.csv", "text/csv",
+     "One row per floor — seats, allocated, available, trapped, expansion"),
+    ("Planning workbook", "2 · required", "data/sample_estate_demand.xlsx",
+     "planning_workbook.xlsx",
+     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+     "Account x LOB x site, one column per period"),
+    ("Deals not yet won", "3 · optional", "data/sample_pipeline.csv",
+     "pipeline.csv", "text/csv",
+     "New business sales is chasing, with how likely each is"),
+    ("Allocations by floor", "4 · optional", "data/sample_allocations.csv",
+     "allocations.csv", "text/csv",
+     "Who holds which seats — unlocks consolidation and relocation"),
+    ("Restrictions", "5 · optional", "data/sample_restrictions.csv",
+     "restrictions.csv", "text/csv",
+     "Frozen accounts, dedicated floors, no-colocation pairs"),
+    ("Floor plan (PDF)", "6 · optional", "data/sample_floor_plan.pdf",
+     "floor_plan.pdf", "application/pdf",
+     "A vector CAD plot — unlocks the coloured floor map"),
+]
+
+
+@st.cache_data(show_spinner=False)
+def sample_bundle() -> bytes:
+    """Every sample in one zip, so a new user gets a working set in one click."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for _, _, path, fname, _, _ in SAMPLES:
+            try:
+                z.write(path, arcname=fname)
+            except FileNotFoundError:
+                pass
+        z.writestr("README.txt",
+                   "Floorcast sample input files\n"
+                   "============================\n\n"
+                   "Use these as templates: replace the contents, keep the column names.\n\n"
+                   + "\n".join(f"{n:22} {fn:24} {d}" for n, _, _, fn, _, d in SAMPLES))
+    return buf.getvalue()
+
+
 
 def _xlsx(sheets: dict) -> bytes:
     buf = io.BytesIO()
@@ -89,21 +135,35 @@ with st.sidebar:
                                        "total_seats, allocated, available, trapped, "
                                        "trapped_reason, expansion_space, expansion_eta_weeks")
         d_file = st.file_uploader("2 · Planning workbook (Excel)", type=["xlsx", "xls"],
-                                      help="Account / LOB / Site with metric rows and one "
-                                           "column per period")
-        p_file = st.file_uploader("3 · Sales pipeline (CSV) — optional", type="csv",
-                                          help="account, site, stage, probability, month, hc")
-        r_file = st.file_uploader("5 · Restrictions (CSV) — optional", type="csv",
-                                  help="rule, subject, object, note — frozen accounts, "
-                                       "dedicated floors, no-colocation pairs, move ceiling")
+                                  help="Account / LOB / Site with metric rows and one "
+                                       "column per period")
+        p_file = st.file_uploader("3 · Deals not yet won (CSV) — optional", type="csv",
+                                  help="account, site, stage, probability, month, hc — one row per deal")
         a_file = st.file_uploader("4 · Allocations by floor (CSV) — optional", type="csv",
                                   help="site, building, floor, account, lob, seats — who holds "
                                        "which seats. Unlocks consolidation and relocation options.")
-        plan_file = st.file_uploader("5 · Floor plan (PDF) — optional",
+        r_file = st.file_uploader("5 · Restrictions (CSV) — optional", type="csv",
+                                  help="rule, subject, object, note — frozen accounts, "
+                                       "dedicated floors, no-colocation pairs, move ceiling")
+        plan_file = st.file_uploader("6 · Floor plan (PDF) — optional",
                                      type=["pdf", "csv"],
                                      help="A vector PDF plotted from CAD. Seats are counted "
                                           "from the desk size annotations.")
         st.caption("Anything left empty falls back to the sample estate.")
+
+    st.divider()
+    with st.expander("⬇ Sample input files", expanded=True):
+        st.caption("Templates — replace the contents, keep the column names.")
+        st.download_button("📦 All six files (.zip)", sample_bundle(),
+                           file_name="floorcast_sample_inputs.zip", mime="application/zip",
+                           width="stretch", key="dl_bundle_side")
+        for label, tag, path, fname, mime, _ in SAMPLES:
+            try:
+                with open(path, "rb") as fh:
+                    st.download_button(f"{label}", fh.read(), file_name=fname, mime=mime,
+                                       width="stretch", key="dl_" + fname)
+            except FileNotFoundError:
+                pass
 
 floors_raw = load_floors(f_file.getvalue()) if f_file else \
     load_floors(open("data/sample_estate_floors.csv", "rb").read())
@@ -131,14 +191,340 @@ if rule_problems:
     rules_raw = rx.empty()
 if "answered_rules" not in st.session_state:
     st.session_state["answered_rules"] = rx.empty()
+@st.cache_data(show_spinner="Reading the planning workbook…")
+def load_os_cached(data):
+    return os1.read_workbook(io.BytesIO(data))
+
+
+try:
+    os_src = load_os_cached(open("data/sample_one_source.xlsx", "rb").read())
+except Exception:
+    os_src = None
+
 RULES = rx.Rules(pd.concat([rules_raw, st.session_state["answered_rules"]], ignore_index=True))
 
 unknown = demand.attrs.get("unrecognised_metrics") or []
 if unknown:
     st.warning("Metric rows not recognised and ignored: " + ", ".join(map(str, unknown)))
 
-tab_estate, tab_demand, tab_ramp, tab_map, tab_scen = st.tabs(
-    ["🏢 Estate", "📈 Demand", "🎯 Ramp plan", "🗺 Floor map", "🔮 Scenarios"])
+with st.expander("⬇ Sample input files — templates you can download and edit", expanded=False):
+    st.caption("The app is running on these right now. Replace the contents, keep the column "
+               "names, and upload them from the sidebar.")
+    st.download_button("📦 Download all six as a zip", sample_bundle(),
+                       file_name="floorcast_sample_inputs.zip", mime="application/zip",
+                       key="dl_bundle_main")
+    dcols = st.columns(3)
+    for i, (label, tag, path, fname, mime, desc) in enumerate(SAMPLES):
+        c = dcols[i % 3]
+        c.markdown(f"**{label}**  \n<span style='color:#5B6B6B;font-size:0.82em'>{tag} — {desc}"
+                   "</span>", unsafe_allow_html=True)
+        try:
+            with open(path, "rb") as fh:
+                c.download_button("Download", fh.read(), file_name=fname, mime=mime,
+                                  width="stretch", key="dlm_" + fname)
+        except FileNotFoundError:
+            c.caption("not bundled")
+
+tab_role, tab_what, tab_estate, tab_demand, tab_ramp, tab_map, tab_scen, tab_qa = st.tabs(
+    ["👥 My view", "🎛 What if", "🏢 Estate", "📈 Demand", "🎯 Ramp plan", "🗺 Floor map",
+     "🔮 Scenarios", "🔍 Data quality"])
+
+
+
+# ═══════════════════════════════════════════════ 0 · MY VIEW
+with tab_role:
+    who = st.radio("I work in", list(rl.ROLES),
+                   horizontal=True, key="role_pick",
+                   format_func=lambda r: f"{rl.ROLES[r]['icon']} {r}")
+    meta = rl.ROLES[who]
+    st.markdown(f"#### {meta['question']}")
+    st.caption(f"**What this view holds:** {meta['cares']}  \n"
+               f"**The step you take:** {meta['action']}")
+    st.divider()
+
+    r_period = st.select_slider("Period", options=dr.week_options(demand),
+                                value=dr.peak_week(demand), key="role_period")
+    r_res = sc.compute(floors, demand, pipe, sc.levers(period=r_period))
+    r_tot = r_res["totals"]
+
+    if who == "Leadership":
+        vals = rl.leadership(floors, {**es.estate_totals(floors), **{}})
+        cols = st.columns(len(vals))
+        for c, (k, v) in zip(cols, vals.items()):
+            c.metric(k, v)
+        st.markdown("##### Where the money is stuck")
+        tb = es.trapped_breakdown(floors)
+        st.dataframe(tb[["trapped_reason", "definition", "seats", "share_%", "releasable"]],
+                     width="stretch", hide_index=True)
+        rec = int(tb.loc[tb["releasable"], "seats"].sum())
+        st.info(f"**{rec:,} seats** sit against reasons that could be recovered without new "
+                f"space — {rec / max(es.estate_totals(floors)['total_seats'], 1) * 100:.0f}% of "
+                "the estate. That is the cheapest capacity available, and the first question "
+                "to ask before approving a lease.")
+
+    elif who == "Operations":
+        k = st.columns(3)
+        k[0].metric("Seats needed", f"{r_tot['incremental_need']:,}")
+        k[1].metric("Seats usable", f"{r_tot['usable']:,}")
+        k[2].metric("Short", f"{r_tot['shortfall']:,}", delta_color="inverse",
+                    delta=f"{r_tot['sites_short']} site(s)" if r_tot['sites_short'] else None)
+        st.dataframe(rl.operations(r_res["sites"]), width="stretch", hide_index=True)
+        if r_tot["shortfall"]:
+            st.error(f"Escalate now for {r_tot['sites_short_names']} — a ramp that is short at "
+                     "plan stage is far cheaper to fix than one short at go-live.")
+        else:
+            st.success("Every site lands. This is the evidence to commit the ramp on.")
+
+    elif who == "Facility":
+        fac = rl.facility(floors)
+        k = st.columns(3)
+        k[0].metric("Renovation in pipeline", f"{int(floors['expansion_space'].sum()):,} seats")
+        k[1].metric("Floors with idle space", int((fac.get('idle_%', pd.Series(dtype=float)) > 25).sum()))
+        k[2].metric("Unusable seats", f"{int(floors['trapped'].sum()):,}")
+        st.dataframe(fac, width="stretch", hide_index=True)
+        st.caption("Sorted by what a renovation would unlock. The lead time column is the one "
+                   "that decides whether it helps this ramp or the next one.")
+
+    elif who == "Security":
+        st.metric("Seats stranded by segregation",
+                  f"{int(floors.loc[floors['trapped_reason'].eq('segregation'), 'trapped'].sum()):,}")
+        st.markdown("##### Rules in force")
+        rs = RULES.summary()
+        st.dataframe(rs if not rs.empty else pd.DataFrame({"note": ["No restrictions loaded"]}),
+                     width="stretch", hide_index=True)
+        st.info("Zone-level segregation is checked on the Floor map tab for any floor with a "
+                "plan loaded. A plan that fits on capacity can still breach a segregation "
+                "clause — the two are separate tests.")
+
+    elif who == "WFM":
+        if os_src is None or os_src["long"].empty:
+            st.info("Load the planning workbook on the Data quality tab to see ratio behaviour.")
+        else:
+            w = rl.wfm(os_src["long"])
+            if not w:
+                st.info("No usable seat ratios found in the workbook.")
+            else:
+                k = st.columns(2)
+                k[0].metric("Programmes with a ratio", f"{int(w['by_geo']['programmes'].sum()):,}")
+                k[1].metric("Ratios above the ceiling", len(w["above_ceiling"]))
+                st.markdown("##### Ratios that cannot be right")
+                st.dataframe(w["above_ceiling"], width="stretch", hide_index=True)
+                st.caption("A ratio is people per seat. Anything above about four is worth "
+                           "treating as a data entry error rather than a plan.")
+                st.markdown("##### Ratio by geo")
+                st.dataframe(w["by_geo"], width="stretch", hide_index=True)
+
+    elif who == "IT":
+        q = rl.it(floors)
+        st.metric("Seats waiting on provisioning", f"{q['seats']:,}")
+        if q["queue"].empty:
+            st.success("Nothing waiting on IT.")
+        else:
+            st.dataframe(q["queue"], width="stretch", hide_index=True)
+            st.info("These seats exist and are empty for want of a build. Provisioning them is "
+                    "usually the cheapest capacity in the estate — no lease, no construction.")
+
+    elif who == "Client":
+        if alloc is None or alloc.empty:
+            st.info("Add the allocations file to see a client footprint.")
+        else:
+            acct = st.selectbox("Account", sorted(alloc["account"].unique()), key="role_acct")
+            c = rl.client(alloc, floors, acct)
+            k = st.columns(4)
+            k[0].metric("Seats held", f"{c['seats']:,}")
+            k[1].metric("Floors", c["floors"])
+            k[2].metric("Sites", c["sites"])
+            k[3].metric("Headroom beside them", f"{c['headroom']:,}")
+            st.dataframe(c["detail"], width="stretch", hide_index=True)
+            if c["shares_with"]:
+                st.warning("Shares a floor with: " + ", ".join(c["shares_with"])
+                           + ". Confirm this is permitted under the contract.")
+            else:
+                st.success("Sits on floors held by no other client.")
+
+    else:  # PMO
+        if os_src is None or os_src["programmes"].empty:
+            st.info("Load the planning workbook on the Data quality tab to see collection status.")
+        else:
+            pr = os_src["programmes"]
+            iss = os1.quality_report(os_src["long"])
+            k = st.columns(4)
+            done = int(pr["status"].eq("Updated").sum())
+            k[0].metric("Programmes", f"{len(pr):,}")
+            k[1].metric("Collected", f"{done / max(len(pr), 1) * 100:.0f}%")
+            k[2].metric("Outstanding", f"{len(pr) - done:,}")
+            k[3].metric("Flagged to check", f"{iss['programme'].nunique() if not iss.empty else 0:,}")
+            st.markdown("##### Who to chase")
+            ch = os1.chase_list(pr)
+            st.dataframe(ch.head(25), width="stretch", hide_index=True)
+            st.download_button("📋 Chase list (CSV)", ch.to_csv(index=False).encode(),
+                               file_name="not_updated.csv", mime="text/csv", key="pmo_chase")
+
+# ═══════════════════════════════════════════════ 0 · WHAT IF
+with tab_what:
+    st.caption("**Move the levers and watch the answer change.** The files are loaded — nothing "
+               "needs uploading again. Save a scenario to put it beside another one.")
+
+    periods_w = dr.week_options(demand)
+    pk_w = dr.peak_week(demand)
+    if "saved_scenarios" not in st.session_state:
+        st.session_state["saved_scenarios"] = {}
+
+    lev, res = st.columns([1, 2.35], gap="large")
+
+    with lev:
+        st.markdown("##### Levers")
+        w_period = st.select_slider("Period", options=periods_w,
+                                    value=pk_w if pk_w in periods_w else periods_w[-1],
+                                    key="w_period")
+        w_uplift = st.slider("Demand vs plan", -0.25, 0.50, 0.0, 0.05,
+                             format="%+.0f%%", key="w_uplift",
+                             help="What if volumes land above or below forecast")
+        st.markdown("**Trapped seats**")
+        tb_w = es.trapped_breakdown(floors)
+        rec = tb_w.loc[tb_w["releasable"], "trapped_reason"].tolist()
+        w_reasons = st.multiselect("Assume recovered", tb_w["trapped_reason"].tolist(),
+                                   default=rec, key="w_reasons",
+                                   label_visibility="collapsed")
+        w_frac = st.slider("How much comes back", 0.0, 1.0, 0.0, 0.05,
+                           format="%.0f%%", key="w_frac")
+        st.markdown("**Renovation**")
+        w_exp = st.toggle("Count expansion space", value=True, key="w_exp")
+        w_hor = st.slider("Landing within (weeks)", 0, 52, 12, 2, key="w_hor",
+                          disabled=not w_exp)
+        st.markdown("**Deals not yet won**")
+        w_pipe = st.radio("Deals not yet won", ["exclude", "weighted", "full"], index=0,
+                          key="w_pipe", horizontal=True,
+                          format_func=lambda m: {"exclude": "Ignore them",
+                                                 "weighted": "Likely ones",
+                                                 "full": "All of them"}[m],
+                          label_visibility="collapsed")
+
+    lv = sc.levers(period=w_period, demand_uplift=w_uplift, release_reasons=w_reasons,
+                   release_fraction=w_frac, include_expansion=w_exp, horizon_weeks=w_hor,
+                   pipeline_mode=w_pipe)
+    now = sc.compute(floors, demand, pipe, lv)
+    base_lv = sc.levers(period=w_period)
+    base = sc.compute(floors, demand, pipe, base_lv)
+    T, BT = now["totals"], base["totals"]
+
+    with res:
+        k = st.columns(4)
+        k[0].metric("Seats needed", f"{T['incremental_need']:,}",
+                    delta=f"{T['incremental_need'] - BT['incremental_need']:+,}" if T['incremental_need'] != BT['incremental_need'] else None,
+                    delta_color="inverse")
+        k[1].metric("Usable seats", f"{T['usable']:,}",
+                    delta=f"{T['usable'] - BT['usable']:+,}" if T['usable'] != BT['usable'] else None)
+        k[2].metric("Shortfall", f"{T['shortfall']:,}",
+                    delta=f"{T['shortfall'] - BT['shortfall']:+,}" if T['shortfall'] != BT['shortfall'] else None,
+                    delta_color="inverse")
+        k[3].metric("Sites short", T["sites_short"],
+                    delta=f"{T['sites_short'] - BT['sites_short']:+d}" if T['sites_short'] != BT['sites_short'] else None,
+                    delta_color="inverse")
+
+        if T["shortfall"] == 0:
+            st.success(f"**Everything fits.** {T['usable']:,} usable seats against "
+                       f"{T['incremental_need']:,} needed.")
+        else:
+            st.error(f"**{T['shortfall']:,} seats short** at {T['sites_short_names']}. "
+                     f"{T['trapped_left']:,} trapped seats are still not counted.")
+
+        wf = sc.waterfall(now)
+        st.markdown("###### How the scenario gets there")
+        st.bar_chart(wf.set_index("step")["seats"], height=210)
+
+        st.markdown("###### Site by site")
+        show = now["sites"][["site", "allocated", "incremental_need", "available",
+                             "released", "expansion_counted", "usable", "gap", "status"]]
+        st.dataframe(show, width="stretch", hide_index=True)
+
+        st.caption(f"This scenario: {sc.describe(lv)}")
+        sv1, sv2, sv3 = st.columns([2, 1, 1])
+        nm = sv1.text_input("Name this scenario", value="", placeholder="e.g. Release half, no renovation",
+                            label_visibility="collapsed")
+        if sv2.button("Save scenario", width="stretch"):
+            st.session_state["saved_scenarios"][nm or f"Scenario {len(st.session_state['saved_scenarios']) + 1}"] = now
+            st.rerun()
+        if sv3.button("Clear saved", width="stretch"):
+            st.session_state["saved_scenarios"] = {}
+            st.rerun()
+
+        # ── the floor, under this scenario
+        st.markdown("###### The floor, under this scenario")
+        try:
+            wf_plan = load_plan(plan_file.getvalue(), plan_file.name) if plan_file \
+                else load_plan(open("data/sample_seat_inventory.csv", "rb").read(),
+                               "sample_seat_inventory.csv")
+        except Exception:
+            wf_plan = None
+
+        if wf_plan is None or wf_plan["seats"].empty:
+            st.info("Load a floor plan to see the map respond to these levers.")
+        else:
+            wseats = wf_plan["seats"].copy()
+            if "zone_type" not in wseats.columns:
+                wseats["zone_type"] = "Production"
+            for cn, vv in [("country", "-"), ("city", "-"), ("site", "SITE"),
+                           ("building", "B1"), ("tower", "T1"), ("floor", "F1")]:
+                if cn not in wseats.columns:
+                    wseats[cn] = vv
+            allocz = sorted(wseats.loc[wseats["zone_type"].astype(str).str.lower()
+                                       == "production", "zone"].unique())
+            cap_w = int(wseats["zone"].isin(allocz).sum())
+            labs_w, sites_w = dr.site_options(demand)
+            fitw = {lb: abs(int(dr.slice_week(demand, w_period, sn)["seats"].sum()) - cap_w)
+                    for lb, sn in zip(labs_w, sites_w)}
+            best_w = min(fitw, key=fitw.get) if fitw else None
+            mc1, mc2 = st.columns([1, 1])
+            wsite_lab = mc1.selectbox("Floor holds demand for", labs_w,
+                                      index=labs_w.index(best_w) if best_w in labs_w else 0,
+                                      key="wf_site")
+            wlevel = mc2.radio("Colour by", ["Account", "LOB"], horizontal=True, key="wf_lvl")
+            wsite = sites_w[labs_w.index(wsite_lab)]
+
+            wsl = dr.slice_week(demand, w_period, wsite)
+            if wsl.empty:
+                st.info("No demand for that site in this period.")
+            else:
+                wsl = wsl.copy()
+                wsl["seats"] = np.ceil(wsl["seats"] * (1 + w_uplift)).astype(int)
+                if w_pipe != "exclude" and pipe is not None and not pipe.empty:
+                    pw = dr.pipeline_seats(pipe, w_pipe, 1.2)
+                    pw = pw[pw["site"] == wsite]
+                    for _, prow in pw.iterrows():
+                        if int(prow["seats"]) > 0:
+                            wsl = pd.concat([wsl, pd.DataFrame([{
+                                "account": f"{prow['account']} (not yet won)",
+                                "lob": "New business", "seats": int(prow["seats"])}])],
+                                ignore_index=True)
+                wsl["site"] = wseats["site"].iloc[0]
+                wsl["building"] = wseats["building"].iloc[0]
+                wsl["tower"] = wseats["tower"].iloc[0]
+                wsl["floor"] = None
+                wassigned, _, wunplaced = sm.allocate_seats(wsl, wseats,
+                                                            allocatable_zones=allocz)
+                placed = int(wassigned["account"].notna().sum())
+                mm = st.columns(3)
+                mm[0].metric("Seats wanted here", f"{int(wsl['seats'].sum()):,}")
+                mm[1].metric("Seats on this floor", f"{cap_w:,}")
+                mm[2].metric("Left empty", f"{cap_w - placed:,}")
+                st.plotly_chart(
+                    fr.plotly_map(wassigned, background=wf_plan.get("background"),
+                                  extent=wf_plan.get("extent"),
+                                  level="account" if wlevel == "Account" else "lob"),
+                    width="stretch", key="wf_map")
+                st.caption("Move a lever above and the colours here follow. Hover a seat for "
+                           "its id, zone and who holds it.")
+                if not wunplaced.empty:
+                    st.warning(f"{int(wunplaced['short_by'].sum()):,} seat(s) wanted here have "
+                               "nowhere to sit on this floor under this scenario.")
+
+    saved = st.session_state["saved_scenarios"]
+    if saved:
+        st.markdown("##### Saved scenarios")
+        st.dataframe(sc.compare({"Baseline": base, **saved}), width="stretch", hide_index=True)
+        st.caption("Baseline is the same period with no levers applied. "
+                   "**vs baseline** is seats of shortfall removed — higher is better.")
 
 # ═══════════════════════════════════════════════ 1 · ESTATE
 with tab_estate:
@@ -525,30 +911,115 @@ with tab_scen:
                             "available", "trapped"]],
                  width="stretch", hide_index=True)
 
-    st.markdown("#### Sales pipeline")
-    st.caption("Demand that has not closed yet. Weighted is the planning view; full is the "
-               "stress test — the estate should have an answer if everything lands.")
+    st.markdown("#### Deals not yet won")
+    st.caption("Business sales is chasing but has not signed. The likely view is what you plan "
+               "against; all of them is the stress test — the estate should have an answer if "
+               "every deal comes in.")
     p1, p2 = st.columns([2, 1])
-    mode = p1.radio("Treat pipeline as", ["exclude", "weighted", "full"], index=1,
+    mode = p1.radio("Count these deals as", ["exclude", "weighted", "full"], index=1,
                     horizontal=True,
-                    format_func=lambda m: {"exclude": "Committed only",
-                                           "weighted": "Weighted by probability",
-                                           "full": "Full pipeline"}[m])
-    ratio = p2.number_input("Seat ratio for pipeline", 1.0, 3.0, 1.2, 0.1)
+                    format_func=lambda m: {"exclude": "Signed business only",
+                                           "weighted": "Weighted by how likely",
+                                           "full": "Every deal we are chasing"}[m])
+    ratio = p2.number_input("Seat ratio for these deals", 1.0, 3.0, 1.2, 0.1)
     ps = dr.pipeline_seats(pipe, mode, ratio)
-    pv = ps.groupby("site")["seats"].sum().rename("pipeline_seats").reset_index()
+    pv = ps.groupby("site")["seats"].sum().rename("seats_if_won").reset_index()
     cap = es.rollup(floors, "site")[["site", "available", "trapped", "expansion_space"]]
     comp = cap.merge(pv, left_on="site", right_on="site", how="outer").fillna(0)
-    comp["gap_vs_available"] = comp["available"] - comp["pipeline_seats"]
+    comp["gap_vs_available"] = comp["available"] - comp["seats_if_won"]
     st.dataframe(comp, width="stretch", hide_index=True)
     tight = comp[comp["gap_vs_available"] < 0]
     if not tight.empty:
-        st.warning("Pipeline exceeds available seats at: "
+        st.warning("These deals would need more seats than are free at: "
                    + ", ".join(f"{r['site']} (short {int(-r['gap_vs_available'])})"
                                for _, r in tight.iterrows())
                    + ". Trapped seats and expansion space are the first places to look.")
     else:
-        st.success("Every site can absorb the pipeline on today's available seats.")
+        st.success("Every site could absorb these deals on the seats free today.")
+
+# ═══════════════════════════════════════════════ 7 · DATA QUALITY
+with tab_qa:
+    st.caption("**Is the plan built on numbers that add up, and how much of it has arrived?** "
+               "Point this at the full planning workbook — one tab per geo — rather than a "
+               "single-sheet extract.")
+    q_file = st.file_uploader("Planning workbook (multi-tab Excel)", type=["xlsx", "xls"],
+                              key="qa_file",
+                              help="The collection file with a tab per country and a block of "
+                                   "metric rows per programme")
+
+    @st.cache_data(show_spinner="Reading the workbook…")
+    def load_os(data):
+        return os1.read_workbook(io.BytesIO(data))
+
+    try:
+        src = load_os(q_file.getvalue()) if q_file else \
+            load_os(open("data/sample_one_source.xlsx", "rb").read())
+    except Exception as exc:
+        st.error(f"Could not read that workbook: {exc}")
+        src = None
+
+    if src is None or src["programmes"].empty:
+        st.info("No programme blocks found. This view expects the collection format — "
+                "Site / Account / Information / Data columns, with a block of metric rows "
+                "starting at 'Total TMs' for each programme.")
+    else:
+        progs, longd = src["programmes"], src["long"]
+        if not q_file:
+            st.caption("Running on a bundled sample in the collection format.")
+        issues = os1.quality_report(longd)
+        comp = os1.completion(progs)
+
+        k = st.columns(4)
+        k[0].metric("Programmes", f"{len(progs):,}")
+        k[1].metric("Geos", progs["geo"].nunique())
+        done = int(progs["status"].eq("Updated").sum())
+        k[2].metric("Collected", f"{done / max(len(progs), 1) * 100:.0f}%",
+                    delta=f"{len(progs) - done} outstanding", delta_color="inverse")
+        n_high = int((issues["severity"] == "High").sum()) if not issues.empty else 0
+        k[3].metric("Programmes to check", f"{issues['programme'].nunique() if not issues.empty else 0:,}",
+                    delta=f"{n_high} high severity" if n_high else None, delta_color="inverse")
+
+        st.warning(os1.coverage_note(progs, longd))
+
+        qa1, qa2, qa3 = st.tabs(["What does not add up", "Collection status", "Who to chase"])
+        with qa1:
+            if issues.empty:
+                st.success("Every programme passes the checks.")
+            else:
+                st.dataframe(os1.quality_summary(issues, progs), width="stretch", hide_index=True)
+                st.caption("Seats Required is taken from the workbook as authoritative. Where a "
+                           "recomputation disagrees it is flagged, never overwritten — the "
+                           "guidance is that the calculation belongs in the cap plans.")
+                sev = st.multiselect("Severity", ["High", "Medium", "Low"],
+                                     default=["High", "Medium"], key="qa_sev")
+                view = issues[issues["severity"].isin(sev)]
+                st.dataframe(view[["geo", "site", "account", "programme", "issue",
+                                   "severity", "worst_period", "detail"]],
+                             width="stretch", hide_index=True, height=320)
+                st.download_button("📊 Issue list (Excel)",
+                                   _xlsx({"Issues": issues,
+                                          "Summary": os1.quality_summary(issues, progs)}),
+                                   file_name="Floorcast_DataQuality.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument."
+                                        "spreadsheetml.sheet")
+        with qa2:
+            st.dataframe(comp, width="stretch", hide_index=True)
+            if not comp.empty:
+                st.bar_chart(comp.set_index("geo")["completion_%"], height=240)
+                worst = comp.iloc[0]
+                st.caption(f"Lowest is {worst['geo']} at {worst['completion_%']}% "
+                           f"({int(worst['not_updated'])} of {int(worst['programmes'])} "
+                           "programmes outstanding).")
+        with qa3:
+            chase = os1.chase_list(progs)
+            if chase.empty:
+                st.success("Nothing outstanding.")
+            else:
+                st.dataframe(chase, width="stretch", hide_index=True)
+                st.download_button("📋 Chase list (CSV)", chase.to_csv(index=False).encode(),
+                                   file_name="not_updated.csv", mime="text/csv")
+                st.caption("Generated from the workbook itself, so it cannot drift out of step "
+                           "with the data the way a maintained list does.")
 
 st.caption("Floorcast · layouts are planning drafts — fire egress, travel distances and "
            "occupancy limits must be verified and certified by a licensed architect.")
