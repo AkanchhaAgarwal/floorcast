@@ -1,9 +1,52 @@
 geo,country,city,site,building,floor,total_seats,allocated,available,trapped,trapped_reason,expansion_space,expansion_eta_weeks,programs,notes
-APAC,India,Gurugram,Aurora Park,Tower A,14F,326,230,96,40,segregation,120,6,"Helio, Vector, Nimbus",Client zone splits the west wing
-APAC,India,Bengaluru,Meridian One,Block B,4F,310,310,0,85,it_not_ready,0,,Vector,Awaiting dual-monitor rollout
-APAC,India,Bengaluru,Meridian One,Block B,5F,290,180,110,30,layout,0,,Vector,
-APAC,Philippines,Manila,Skyline Center,Tower 2,8F,540,540,0,150,segregation,200,10,"Helio, Nimbus",Renovation of the east block
-APAC,Philippines,Manila,Skyline Center,Tower 2,9F,480,455,25,70,under_renovation,0,,Nimbus,Partial refit in progress
-APAC,Philippines,Cebu,Harbour Point,Main,3F,260,160,100,20,layout,0,,Nimbus,
-EMEA,Poland,Krakow,Vistula House,North,2F,240,120,120,15,contractual_hold,0,,Vector,Seats held under contract
-EMEA,Poland,Krakow,Vistula House,North,3F,240,95,145,25,layout,80,4,"Vector, Nimbus",
+APACA,Philippines,Manila,APA-MNL-01,MNL Tower,05F,320,294,26,68,segregation,0,,"Client A, Client B",Client zone splits the east wing
+APACA,Philippines,Manila,APA-MNL-01,MNL Tower,06F,300,276,24,35,segregation,0,,"Client A, Client B",
+APACA,Philippines,Manila,APA-MNL-01,MNL Tower,07F,280,258,22,26,segregation,0,,"Client A, Client B",
+APACA,Philippines,Manila,APA-MNL-02,MNL Tower,11F,260,203,57,46,it_not_ready,0,,Client A,Dual-screen rollout outstanding
+APACA,Philippines,Manila,APA-MNL-02,MNL Tower,12F,240,187,53,48,it_not_ready,0,,Client A,
+APACA,Thailand,Bangkok,APA-BKK-01,BKK Tower,03F,300,216,84,19,under_renovation,220,8.0,Client B,"East block refit, ETA 8 weeks"
+APACA,Thailand,Bangkok,APA-BKK-01,BKK Tower,04F,290,209,81,43,under_renovation,0,,Client B,
+APACA,Thailand,Bangkok,APA-BKK-02,BKK Tower,08F,280,154,126,48,layout,0,,"Client B, Client C",Pods too small to allocate whole
+APACA,Thailand,Bangkok,APA-BKK-02,BKK Tower,09F,260,143,117,37,layout,0,,"Client B, Client C",
+APACA,Thailand,Bangkok,APA-BKK-02,BKK Tower,10F,250,138,112,16,layout,0,,"Client B, Client C",
+APACA,India,Chennai,APA-MAA-01,MAA Tower,02F,340,330,10,45,segregation,180,12.0,Client A,Renovation would open the north bay
+APACA,India,Chennai,APA-MAA-01,MAA Tower,03F,320,310,10,62,segregation,0,,Client A,
+APACA,India,Chennai,APA-MAA-01,MAA Tower,04F,300,291,9,39,segregation,0,,Client A,
+APACA,India,Chennai,APA-MAA-02,MAA Tower,15F,290,203,87,25,contractual_hold,0,,Client C,"Seats held under contract, unoccupied"
+APACA,India,Chennai,APA-MAA-02,MAA Tower,16F,270,189,81,35,contractual_hold,0,,Client C,
+APACA,India,Chennai,APA-MAA-03,MAA Tower,06F,350,280,70,22,condition,0,,"Client A, Client C",Furniture damaged after water ingress
+APACA,India,Chennai,APA-MAA-03,MAA Tower,07F,330,264,66,25,condition,0,,"Client A, Client C",
+EMEA,Romania,Bucharest,EME-BUC-01,BUC Tower,04F,310,298,12,65,layout,0,,Client B,
+EMEA,Romania,Bucharest,EME-BUC-01,BUC Tower,05F,300,288,12,47,layout,0,,Client B,
+EMEA,Romania,Bucharest,EME-BUC-01,BUC Tower,06F,290,278,12,43,layout,0,,Client B,
+EMEA,Romania,Bucharest,EME-BUC-02,BUC Tower,02F,250,170,80,50,it_not_ready,140,6.0,"Client B, Client C",Refit plus provisioning together
+EMEA,Romania,Bucharest,EME-BUC-02,BUC Tower,03F,240,163,77,52,it_not_ready,0,,"Client B, Client C",
+EMEA,Portugal,Lisbon,EME-LIS-01,LIS Tower,07F,300,255,45,47,segregation,0,,"Client A, Client C",Two clients on one floor today
+EMEA,Portugal,Lisbon,EME-LIS-01,LIS Tower,08F,280,238,42,46,segregation,0,,"Client A, Client C",
+EMEA,Portugal,Lisbon,EME-LIS-02,LIS Tower,01F,270,140,130,57,layout,0,,Client C,
+EMEA,Portugal,Lisbon,EME-LIS-02,LIS Tower,02F,260,135,125,54,layout,0,,Client C,
+EMEA,Portugal,Lisbon,EME-LIS-02,LIS Tower,03F,250,131,119,25,layout,0,,Client C,
+EMEA,Egypt,Cairo,EME-CAI-01,CAI Tower,09F,330,310,20,64,under_renovation,260,10.0,Client A,"Phased refit, ETA 10 weeks"
+EMEA,Egypt,Cairo,EME-CAI-01,CAI Tower,10F,320,301,19,53,under_renovation,0,,Client A,
+EMEA,Egypt,Cairo,EME-CAI-01,CAI Tower,11F,310,291,19,49,under_renovation,0,,Client A,
+EMEA,Egypt,Cairo,EME-CAI-02,CAI Tower,05F,280,207,73,50,contractual_hold,0,,Client B,"Client-owned seats, currently empty"
+EMEA,Egypt,Cairo,EME-CAI-02,CAI Tower,06F,270,200,70,46,contractual_hold,0,,Client B,
+EMEA,Egypt,Cairo,EME-CAI-03,CAI Tower,12F,350,287,63,67,it_not_ready,0,,"Client A, Client B",Awaiting thin-client build
+EMEA,Egypt,Cairo,EME-CAI-03,CAI Tower,13F,300,246,54,59,it_not_ready,0,,"Client A, Client B",
+Americas,Colombia,Bogota,AME-BOG-01,BOG Tower,03F,330,290,40,64,segregation,200,9.0,Client C,"Secure zone rebuild, ETA 9 weeks"
+Americas,Colombia,Bogota,AME-BOG-01,BOG Tower,04F,310,273,37,56,segregation,0,,Client C,
+Americas,Colombia,Bogota,AME-BOG-01,BOG Tower,05F,300,264,36,60,segregation,0,,Client C,
+Americas,Colombia,Bogota,AME-BOG-02,BOG Tower,08F,260,130,130,41,layout,0,,Client A,
+Americas,Colombia,Bogota,AME-BOG-02,BOG Tower,09F,250,125,125,46,layout,0,,Client A,
+Americas,Mexico,Guadalajara,AME-GDL-01,GDL Tower,02F,300,228,72,36,it_not_ready,0,,Client B,Softphone rollout in progress
+Americas,Mexico,Guadalajara,AME-GDL-01,GDL Tower,03F,290,220,70,59,it_not_ready,0,,Client B,
+Americas,Mexico,Guadalajara,AME-GDL-02,GDL Tower,06F,280,154,126,59,condition,0,,"Client A, Client B","Ageing furniture, replacement pending"
+Americas,Mexico,Guadalajara,AME-GDL-02,GDL Tower,07F,270,148,122,20,condition,0,,"Client A, Client B",
+Americas,Mexico,Guadalajara,AME-GDL-02,GDL Tower,08F,260,144,116,41,condition,0,,"Client A, Client B",
+Americas,Canada,Winnipeg,AME-YWG-01,YWG Tower,04F,320,298,22,43,under_renovation,240,7.0,Client C,"Floor 6 refit, ETA 7 weeks"
+Americas,Canada,Winnipeg,AME-YWG-01,YWG Tower,05F,310,288,22,54,under_renovation,0,,Client C,
+Americas,Canada,Winnipeg,AME-YWG-01,YWG Tower,06F,300,279,21,66,under_renovation,0,,Client C,
+Americas,Canada,Winnipeg,AME-YWG-02,YWG Tower,10F,270,178,92,32,contractual_hold,0,,"Client C, Client A",Reserved under the master agreement
+Americas,Canada,Winnipeg,AME-YWG-02,YWG Tower,11F,260,172,88,48,contractual_hold,0,,"Client C, Client A",
+Americas,Canada,Winnipeg,AME-YWG-03,YWG Tower,01F,340,269,71,49,layout,0,,Client B,
+Americas,Canada,Winnipeg,AME-YWG-03,YWG Tower,02F,300,237,63,60,layout,0,,Client B,

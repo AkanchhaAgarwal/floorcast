@@ -148,8 +148,14 @@ def allocate_seats(seat_forecast: pd.DataFrame, seats: pd.DataFrame,
         else:
             allocatable_zones = sorted(seats["zone"].unique())
     allocatable_zones = set(allocatable_zones)
+    # a trapped seat exists but cannot be sold — it is out of the pool until
+    # something (a partition move, an IT build) releases it
+    if "seat_status" in seats.columns:
+        usable_mask = seats["seat_status"].fillna("usable").ne("trapped")
+    else:
+        usable_mask = pd.Series(True, index=seats.index)
     seats["key"] = seats.apply(floor_key, axis=1)
-    pool_all = seats[seats["zone"].isin(allocatable_zones)]
+    pool_all = seats[seats["zone"].isin(allocatable_zones) & usable_mask]
     cap_free = pool_all.groupby("key")["seat_id"].count().to_dict()
 
     fc = seat_forecast.copy()
@@ -210,7 +216,8 @@ def allocate_seats(seat_forecast: pd.DataFrame, seats: pd.DataFrame,
 
     for k, entries in by_floor.items():
         pool = _order_seats(seats[(seats["key"] == k)
-                                  & (seats["zone"].isin(allocatable_zones))])
+                                  & seats["zone"].isin(allocatable_zones)
+                                  & usable_mask])
         zone_seats = {z: list(g.index) for z, g in pool.groupby("zone", sort=False)}
         free = {z: len(v) for z, v in zone_seats.items()}
 

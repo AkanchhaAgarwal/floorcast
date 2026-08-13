@@ -1,5 +1,5 @@
 rule,subject,object,note
-frozen,Nimbus,,Client audit closes in March - no moves until then
-dedicated,3F,Vector,Vistula House 3F is contractually Vector's
-no_colocate,Helio,Vector,Competing retail programmes - separate floors
-max_moves,plan,120,Facilities can lift 120 seats in one weekend
+frozen,Client C,,"Client audit closes in March, no moves before then"
+dedicated,05F,Client A,APA-MNL-01 floor 05F is contractually Client A's
+no_colocate,Client A,Client B,"Competing programmes, must not share a floor"
+max_moves,plan,150,Facilities can lift 150 seats in one weekend

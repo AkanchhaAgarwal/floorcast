@@ -10,6 +10,7 @@ Run:  streamlit run app.py
 """
 
 import io
+import os as _os
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -23,6 +24,7 @@ from floorcast_core import restrictions as rx
 from floorcast_core import scenario as sc
 from floorcast_core import onesource as os1
 from floorcast_core import roles as rl
+from floorcast_core import plan_library as pl
 
 st.set_page_config(page_title="Floorcast", page_icon="🏬", layout="wide")
 
@@ -111,6 +113,32 @@ def load_rules(data):
     return pd.read_csv(io.BytesIO(data))
 
 
+@st.cache_data(show_spinner="Reading the floor plans…")
+def build_library(payloads):
+    """payloads: tuple of (filename, bytes). Returns the plan dict plus anything
+    that could not be identified, so the app can ask rather than guess."""
+    from floorcast_core import plan_ingest
+    plans, unknown = {}, []
+    for name, data in payloads:
+        try:
+            if name.lower().endswith(".csv"):
+                seats = pd.read_csv(io.BytesIO(data))
+                out = {"seats": seats, "background": None, "extent": None,
+                       "scale_mm_per_pt": None, "zone_labels": pd.DataFrame()}
+            else:
+                out = plan_ingest.read_plan(data)
+        except Exception as exc:
+            unknown.append({"file": name, "why": str(exc)[:120]})
+            continue
+        k = pl.identify(name, out)
+        if not k["site"] or not k["floor"]:
+            unknown.append({"file": name, "why": "could not tell which floor this is"})
+            continue
+        building = k["site"].split("-")[1] + " Tower" if "-" in k["site"] else "B1"
+        plans[(k["site"], building, k["floor"])] = out
+    return plans, unknown
+
+
 @st.cache_data(show_spinner="Reading the floor plan…")
 def load_plan(data, name):
     if name.lower().endswith(".csv"):
@@ -145,10 +173,12 @@ with st.sidebar:
         r_file = st.file_uploader("5 · Restrictions (CSV) — optional", type="csv",
                                   help="rule, subject, object, note — frozen accounts, "
                                        "dedicated floors, no-colocation pairs, move ceiling")
-        plan_file = st.file_uploader("6 · Floor plan (PDF) — optional",
-                                     type=["pdf", "csv"],
-                                     help="A vector PDF plotted from CAD. Seats are counted "
-                                          "from the desk size annotations.")
+        plan_file = st.file_uploader("6 · Floor plans (PDF) — optional",
+                                     type=["pdf", "csv"], accept_multiple_files=True,
+                                     help="One vector PDF per surveyed floor. Upload the whole "
+                                          "site and demand is placed across its floors at once. "
+                                          "Name files like SITE-CODE_05F.pdf, or the drawing's "
+                                          "own title block is read.")
         st.caption("Anything left empty falls back to the sample estate.")
 
     st.divider()
@@ -329,18 +359,30 @@ with tab_role:
             st.info("Add the allocations file to see a client footprint.")
         else:
             acct = st.selectbox("Account", sorted(alloc["account"].unique()), key="role_acct")
-            c = rl.client(alloc, floors, acct)
+            c = rl.client(alloc, floors, acct, demand=demand, period=r_period)
             k = st.columns(4)
             k[0].metric("Seats held", f"{c['seats']:,}")
-            k[1].metric("Floors", c["floors"])
-            k[2].metric("Sites", c["sites"])
-            k[3].metric("Headroom beside them", f"{c['headroom']:,}")
+            k[1].metric("Seats needed", f"{c['need']:,}" if c.get("need") is not None else "—")
+            k[2].metric("Free beside them", f"{c['headroom']:,}")
+            k[3].metric("Floors", c["floors"])
+
+            if c.get("verdict"):
+                if c.get("growth") is not None and c["growth"] > c["headroom"]:
+                    st.error(c["verdict"])
+                elif c.get("growth", 0) > 0:
+                    st.success(c["verdict"])
+                else:
+                    st.info(c["verdict"])
+
+            st.markdown("##### Where they sit")
             st.dataframe(c["detail"], width="stretch", hide_index=True)
+
             if c["shares_with"]:
                 st.warning("Shares a floor with: " + ", ".join(c["shares_with"])
                            + ". Confirm this is permitted under the contract.")
             else:
-                st.success("Sits on floors held by no other client.")
+                st.success("Sits on floors held by no other client — segregation is clean "
+                           "for this account today.")
 
     else:  # PMO
         if os_src is None or os_src["programmes"].empty:
@@ -470,7 +512,21 @@ with tab_what:
                     wseats[cn] = vv
             allocz = sorted(wseats.loc[wseats["zone_type"].astype(str).str.lower()
                                        == "production", "zone"].unique())
-            cap_w = int(wseats["zone"].isin(allocz).sum())
+            # the release lever frees trapped seats on the plan too, so the map
+            # answers the same question as the numbers above it
+            if "seat_status" in wseats.columns and w_reasons and w_frac > 0:
+                cand = wseats.index[wseats["seat_status"].eq("trapped")
+                                    & wseats["trapped_reason"].isin(w_reasons)]
+                take = int(round(len(cand) * w_frac))
+                if take:
+                    wseats.loc[cand[:take], "seat_status"] = "usable"
+                    wseats.loc[cand[:take], "trapped_reason"] = ""
+            still_trapped = int(wseats.get("seat_status",
+                                           pd.Series(dtype=str)).eq("trapped").sum())
+            cap_w = int((wseats["zone"].isin(allocz)
+                         & wseats.get("seat_status",
+                                      pd.Series("usable", index=wseats.index))
+                         .ne("trapped")).sum())
             labs_w, sites_w = dr.site_options(demand)
             fitw = {lb: abs(int(dr.slice_week(demand, w_period, sn)["seats"].sum()) - cap_w)
                     for lb, sn in zip(labs_w, sites_w)}
@@ -504,17 +560,20 @@ with tab_what:
                 wassigned, _, wunplaced = sm.allocate_seats(wsl, wseats,
                                                             allocatable_zones=allocz)
                 placed = int(wassigned["account"].notna().sum())
-                mm = st.columns(3)
+                mm = st.columns(4)
                 mm[0].metric("Seats wanted here", f"{int(wsl['seats'].sum()):,}")
-                mm[1].metric("Seats on this floor", f"{cap_w:,}")
-                mm[2].metric("Left empty", f"{cap_w - placed:,}")
+                mm[1].metric("Usable on this floor", f"{cap_w:,}")
+                mm[2].metric("Still unusable", f"{still_trapped:,}",
+                             delta_color="inverse")
+                mm[3].metric("Left empty", f"{cap_w - placed:,}")
                 st.plotly_chart(
                     fr.plotly_map(wassigned, background=wf_plan.get("background"),
                                   extent=wf_plan.get("extent"),
                                   level="account" if wlevel == "Account" else "lob"),
                     width="stretch", key="wf_map")
-                st.caption("Move a lever above and the colours here follow. Hover a seat for "
-                           "its id, zone and who holds it.")
+                st.caption("Move a lever above and the colours here follow. Gold outlines are seats "
+                           "that exist but cannot be used — releasing them above brings them "
+                           "into play here. Hover any seat for its id, zone and holder.")
                 if not wunplaced.empty:
                     st.warning(f"{int(wunplaced['short_by'].sum()):,} seat(s) wanted here have "
                                "nowhere to sit on this floor under this scenario.")
@@ -760,129 +819,137 @@ with tab_ramp:
 
 # ═══════════════════════════════════════════════ 4 · FLOOR MAP
 with tab_map:
-    st.caption("**Which client sits in which seat?**")
-    if plan_file is not None:
-        plan = load_plan(plan_file.getvalue(), plan_file.name)
+    st.caption("**Which client sits on which floor, and which seat?** Upload every plan for a "
+               "site and demand is placed across its floors at once — which is how segregation "
+               "actually works, since a client wanting its own space usually means its own floor.")
+
+    if plan_file:
+        payloads = tuple((f.name, f.getvalue()) for f in plan_file)
     else:
-        plan = load_plan(open("data/sample_seat_inventory.csv", "rb").read(),
-                         "sample_seat_inventory.csv")
-        st.caption("No plan uploaded — using the bundled surveyed floor.")
+        import glob as _glob
+        bundled = sorted(_glob.glob("data/plans/*.pdf"))
+        payloads = tuple((_os.path.basename(p), open(p, "rb").read()) for p in bundled) \
+            if bundled else ()
+        if payloads:
+            st.caption("No plans uploaded — showing the bundled surveyed site.")
 
-    seats = plan["seats"].copy()
-    if "zone_type" not in seats.columns:
-        seats["zone_type"] = "Production"
-    for cname, v in [("country", "—"), ("city", "—"), ("site", "SITE"),
-                     ("building", "B1"), ("tower", "T1"), ("floor", "F1")]:
-        if cname not in seats.columns:
-            seats[cname] = v
-    sp = sm.validate_seats(seats)
-    if sp:
-        st.error("Seat inventory cannot be used:\n\n" + "\n".join(f"- {x}" for x in sp))
+    if not payloads:
+        st.info("Upload one or more floor plans to see the map. Everything else in the app "
+                "works without them.")
     else:
-        zsum = (seats.groupby("zone").agg(seats=("seat_id", "count"),
-                                          suggested=("zone_type", "first")).reset_index()
-                .sort_values("seats", ascending=False))
-        zsum["Allocate"] = zsum["suggested"].str.lower().eq("production")
-        n_prod = int(zsum.loc[zsum["Allocate"], "seats"].sum())
-        n_supp = int(zsum.loc[~zsum["Allocate"], "seats"].sum())
-        supp_names = ", ".join(zsum.loc[~zsum["Allocate"], "zone"].head(4))
-        with st.expander(f"Zones — {n_prod} production seats"
-                         + (f", {n_supp} held back as support ({supp_names})" if n_supp else "")):
-            st.caption("Meeting rooms, IT and HR rooms and manager cabins are recognised from "
-                       "their names and held out of the pool. Tick or untick to override.")
-            edited = st.data_editor(zsum[["zone", "seats", "Allocate"]], hide_index=True,
-                                    width="stretch", disabled=["zone", "seats"],
-                                    key="zone_ed")
-        allocatable = edited.loc[edited["Allocate"], "zone"].tolist()
-        prod_cap = int(edited.loc[edited["Allocate"], "seats"].sum())
-
-        g1, g2, g3 = st.columns(3)
-        level = g1.radio("Colour by", ["Account", "LOB"], horizontal=True)
-        labels2, sites2 = dr.site_options(demand)
-        # start on the site whose demand best matches this floor, so the first
-        # thing the user sees is a map that makes sense
-        pk_all = dr.peak_week(demand)
-        fit = {}
-        for lb, sname in zip(labels2, sites2):
-            n = int(dr.slice_week(demand, pk_all, sname)["seats"].sum())
-            fit[lb] = abs(n - prod_cap)
-        best = min(fit, key=fit.get) if fit else None
-        opts = labels2 + ["All sites"]
-        spick = g2.selectbox("This floor holds demand for", opts,
-                             index=opts.index(best) if best in opts else 0,
-                             key="map_site")
-        msite = None if spick == "All sites" else sites2[labels2.index(spick)]
-        mperiod = g3.select_slider("Period", options=dr.week_options(demand),
-                                   value=dr.peak_week(demand, msite), key="map_period")
-
-        sl = dr.slice_week(demand, mperiod, msite)
-        if sl.empty:
-            st.info("No demand for that selection.")
+        library, unknown = build_library(payloads)
+        if unknown:
+            st.warning("Could not place " + str(len(unknown)) + " file(s):")
+            st.dataframe(pd.DataFrame(unknown), width="stretch", hide_index=True)
+        if not library:
+            st.error("None of those files could be read as a floor plan.")
         else:
-            sl["site"] = seats["site"].iloc[0]
-            sl["building"] = seats["building"].iloc[0]
-            sl["tower"] = seats["tower"].iloc[0]
-            sl["floor"] = None
-            assigned, blocks, unplaced = sm.allocate_seats(sl, seats,
-                                                           allocatable_zones=allocatable)
-            need_here = int(sl["seats"].sum())
-            if need_here > prod_cap * 1.2:
-                st.warning(
-                    f"**{spick} needs {need_here:,} seats but this floor holds {prod_cap:,}.** "
-                    "Demand is for the whole site, and a site usually has several floors, so "
-                    "the first client fills the plan and the rest have nowhere to go — which "
-                    "is why the map comes out one colour. Choose an earlier period, or a site "
-                    "sized to this floor. The Ramp plan tab is where the shortfall belongs.")
-            q = st.columns(4)
-            q[0].metric("Seats required", f"{need_here:,}")
-            q[1].metric("Production seats", f"{prod_cap:,}")
-            q[2].metric("Allocated", f"{int(assigned['account'].notna().sum()):,}")
-            q[3].metric("Spare", f"{prod_cap - int(assigned['account'].notna().sum()):,}")
+            rec = pl.reconcile(library, floors)
+            sites_s = pl.surveyed_sites(library)
+            c1, c2 = st.columns([1, 1])
+            msite2 = c1.selectbox("Site", sites_s, key="map_site2")
+            level2 = c2.radio("Colour by", ["Account", "LOB"], horizontal=True, key="map_lvl2")
 
-            lvl2 = "account" if level == "Account" else "lob"
-            png, pdf = fr.render_floor_map(
-                assigned, background=plan.get("background"), extent=plan.get("extent"),
-                level=lvl2,
-                title=f"Seat allocation by {'client account' if lvl2 == 'account' else 'line of business'}",
-                subtitle=f"{mperiod} · {spick} · {need_here:,} seats required · "
-                         f"{prod_cap:,} production seats")
-            st.image(png, width="stretch")
-            e1, e2 = st.columns(2)
-            e1.download_button("🖼 Floor map (PNG)", png,
-                               file_name=f"Floorcast_FloorMap_{mperiod}_{lvl2}.png",
-                               mime="image/png")
-            e2.download_button("📄 Floor map (PDF)", pdf,
-                               file_name=f"Floorcast_FloorMap_{mperiod}_{lvl2}.pdf",
-                               mime="application/pdf")
+            with st.expander(f"Plans loaded — {len(library)} floor(s) across "
+                             f"{len(sites_s)} site(s)"):
+                st.dataframe(rec, width="stretch", hide_index=True)
+                off = rec[rec["agrees"] == "no"] if "agrees" in rec.columns else pd.DataFrame()
+                if not off.empty:
+                    st.warning("Some drawings disagree with the floor inventory. That usually "
+                               "means the drawing is out of date, and it is worth resolving "
+                               "before the plan is used.")
 
-            seg = sm.zone_security_report(assigned)
-            if seg.empty:
-                st.success("Segregation clean — every zone held by a single account.")
+            site_plans = {k: v for k, v in library.items() if k[0] == msite2}
+            seats_all = pl.combine(site_plans)
+            allocz2 = sorted(seats_all.loc[seats_all["zone_type"].astype(str).str.lower()
+                                           == "production", "zone"].unique())
+            prod2 = int(seats_all["zone"].isin(allocz2).sum())
+
+            labs2, sites2 = dr.site_options(demand)
+            match = [l for l, sn in zip(labs2, sites2) if sn == msite2]
+            demand_site = msite2 if match else None
+            d1, d2 = st.columns([1, 1])
+            if not match:
+                pick = d1.selectbox("This site's demand is filed under", labs2, key="map_dem")
+                demand_site = sites2[labs2.index(pick)]
             else:
-                st.warning(f"{len(seg)} zone(s) shared by more than one account.")
-                st.dataframe(seg, width="stretch", hide_index=True)
+                d1.caption(f"Demand for **{msite2}** found in the workbook.")
+            mperiod2 = d2.select_slider("Period", options=dr.week_options(demand),
+                                        value=dr.peak_week(demand, demand_site), key="map_per2")
 
-            st.markdown("##### Where a new requirement would fit")
-            st.caption("Contiguous blocks big enough for a requirement — replacing the "
-                       "select-and-count step done by hand on the sheet.")
-            ask = st.number_input("Seats to place", min_value=1, max_value=5000, value=60, step=10)
-            fit, short = es.fit_blocks(assigned, int(ask))
-            if fit.empty:
-                st.info("No free blocks on this floor.")
+            sl2 = dr.slice_week(demand, mperiod2, demand_site)
+            if sl2.empty:
+                st.info("No demand for that site in this period.")
             else:
-                st.dataframe(fit, width="stretch", hide_index=True)
-                if short:
-                    st.warning(f"{short} seat(s) would not fit on this floor.")
-                elif (~fit["whole_block"]).any():
-                    st.caption("One block is split — that block would end up shared "
-                               "between two accounts unless a partition moves.")
+                assigned2, blocks2, unplaced2 = pl.allocate_site(sl2, seats_all, allocz2)
+                placed2 = int(assigned2["account"].notna().sum())
+                need2 = int(sl2["seats"].sum())
+                k2 = st.columns(4)
+                k2[0].metric("Seats wanted", f"{need2:,}")
+                k2[1].metric("Production seats", f"{prod2:,}")
+                k2[2].metric("Placed", f"{placed2:,}")
+                k2[3].metric("Left empty", f"{prod2 - placed2:,}")
 
-            st.download_button("📊 Seat register (Excel)",
-                               _xlsx({"Seat Register": assigned, "Seat Blocks": blocks,
-                                      "Segregation": seg}),
-                               file_name=f"Floorcast_SeatPlan_{mperiod}.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument."
-                                    "spreadsheetml.sheet")
+                if not unplaced2.empty and int(unplaced2["short_by"].sum()) > 0:
+                    st.error(f"{int(unplaced2['short_by'].sum()):,} seat(s) do not fit on the "
+                             "surveyed floors at this site.")
+
+                fs = pl.floor_summary(assigned2)
+                sp = pl.account_spread(assigned2)
+                t1, t2 = st.columns([1.35, 1])
+                with t1:
+                    st.markdown("###### Floor by floor")
+                    st.dataframe(fs[["floor", "seats", "allocated", "empty", "full_%",
+                                     "accounts", "shared"]],
+                                 width="stretch", hide_index=True)
+                with t2:
+                    st.markdown("###### How each client landed")
+                    st.dataframe(sp[["account", "seats", "floors", "verdict"]],
+                                 width="stretch", hide_index=True)
+                whole = int((sp["floors"] == 1).sum()) if not sp.empty else 0
+                if whole:
+                    st.success(f"{whole} client(s) have a floor to themselves at this site.")
+
+                seg2 = sm.zone_security_report(assigned2)
+                if seg2.empty:
+                    st.success("Segregation clean — no zone is shared between two clients.")
+                else:
+                    st.warning(f"{len(seg2)} zone(s) shared by more than one client.")
+                    st.dataframe(seg2, width="stretch", hide_index=True)
+
+                st.markdown("###### The floors")
+                fl_list = pl.floors_for(library, msite2)
+                ftabs = st.tabs([f"Floor {f}" for f in fl_list])
+                for tab, fl in zip(ftabs, fl_list):
+                    with tab:
+                        key = next(k for k in site_plans if k[2] == fl)
+                        this = assigned2[assigned2["floor"] == fl]
+                        st.plotly_chart(
+                            fr.plotly_map(this, background=site_plans[key].get("background"),
+                                          extent=site_plans[key].get("extent"),
+                                          level="account" if level2 == "Account" else "lob"),
+                            width="stretch", key=f"map_{msite2}_{fl}")
+                        png, pdf_b = fr.render_floor_map(
+                            this, background=site_plans[key].get("background"),
+                            extent=site_plans[key].get("extent"),
+                            level="account" if level2 == "Account" else "lob",
+                            title=f"{msite2} / {fl} — allocation by "
+                                  f"{'client' if level2 == 'Account' else 'line of business'}",
+                            subtitle=f"{mperiod2} · {len(this)} seats on this floor")
+                        e1, e2 = st.columns(2)
+                        e1.download_button("🖼 PNG", png, key=f"png_{fl}",
+                                           file_name=f"{msite2}_{fl}_{mperiod2}.png",
+                                           mime="image/png", width="stretch")
+                        e2.download_button("📄 PDF", pdf_b, key=f"pdf_{fl}",
+                                           file_name=f"{msite2}_{fl}_{mperiod2}.pdf",
+                                           mime="application/pdf", width="stretch")
+
+                st.download_button("📊 Seat register, whole site (Excel)",
+                                   _xlsx({"Seats": assigned2, "By floor": fs,
+                                          "By client": sp, "Segregation": seg2}),
+                                   file_name=f"Floorcast_{msite2}_{mperiod2}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument."
+                                        "spreadsheetml.sheet")
 
 # ═══════════════════════════════════════════════ 5 · SCENARIOS
 with tab_scen:

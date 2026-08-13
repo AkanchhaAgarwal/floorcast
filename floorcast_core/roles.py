@@ -161,25 +161,58 @@ def it(floors: pd.DataFrame) -> dict:
             "seats": int(q["seats to provision"].sum()) if not q.empty else 0}
 
 
-def client(alloc: pd.DataFrame, floors: pd.DataFrame, account: str) -> dict:
-    """One account's footprint and the headroom beside it."""
+def client(alloc: pd.DataFrame, floors: pd.DataFrame, account: str,
+           demand: pd.DataFrame = None, period: str = None) -> dict:
+    """One account's footprint, and whether it can grow where it already sits.
+
+    A client asks two things: where are we, and is there room. Answering only
+    the first turns this into a report. The headroom and the growth check are
+    what make it a conversation.
+    """
     if alloc is None or alloc.empty:
         return {}
     mine = alloc[alloc["account"] == account]
     if mine.empty:
         return {}
-    floors_used = mine["floor_id"].nunique()
     my_floors = set(mine["floor_id"])
     others = alloc[alloc["floor_id"].isin(my_floors) & (alloc["account"] != account)]
-    headroom = alloc[alloc["floor_id"].isin(my_floors)].groupby("floor_id")["floor_free"].first().sum()
+    headroom = int(alloc[alloc["floor_id"].isin(my_floors)]
+                   .groupby("floor_id")["floor_free"].first().sum())
+    held = int(mine["seats"].sum())
+
+    # can they grow where they already are?
+    need, growth, verdict = None, None, ""
+    if demand is not None and not demand.empty and period:
+        d = demand[(demand["Account"] == account) & (demand["week"] == period)]
+        if not d.empty:
+            need = int(d["seats"].sum())
+            growth = need - held
+            if growth <= 0:
+                verdict = "Holds more seats than the plan calls for."
+            elif growth <= headroom:
+                verdict = (f"Needs {growth} more seats; {headroom} are free beside them, "
+                           "so the growth fits without a move.")
+            else:
+                verdict = (f"Needs {growth} more seats but only {headroom} are free "
+                           f"beside them — {growth - headroom} would land elsewhere "
+                           "unless space is freed.")
+
+    by_site = (mine.groupby("site")
+               .agg(seats=("seats", "sum"), floors=("floor_id", "nunique"))
+               .reset_index().sort_values("seats", ascending=False))
+
     return {
-        "seats": int(mine["seats"].sum()),
-        "floors": floors_used,
+        "seats": held,
+        "floors": mine["floor_id"].nunique(),
         "sites": mine["site"].nunique(),
         "shares_with": sorted(others["account"].unique().tolist()),
-        "headroom": int(headroom),
-        "detail": mine[["site", "building", "floor", "lob", "seats"]].sort_values("seats",
-                                                                                  ascending=False),
+        "headroom": headroom,
+        "need": need,
+        "growth": growth,
+        "verdict": verdict,
+        "by_site": by_site,
+        "detail": mine[["site", "building", "floor", "lob", "seats"]]
+        .sort_values("seats", ascending=False),
     }
 
 

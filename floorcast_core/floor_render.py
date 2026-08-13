@@ -19,6 +19,7 @@ from matplotlib.lines import Line2D
 PALETTE = ["#0B7A4B", "#E07B00", "#6D28D9", "#C2185B", "#1565C0", "#00838F",
            "#8D6E63", "#AD1457", "#2E7D32", "#EF6C00", "#4527A0", "#00695C"]
 UNALLOCATED = "#DDDDDD"
+TRAPPED = "#C9A227"        # present, paid for, not usable
 
 
 def colour_map(labels):
@@ -109,6 +110,8 @@ def plotly_map(seats, background=None, extent=None, level="account",
     the planner hover a seat to see who holds it. Same colours, same allocation —
     a different job.
     """
+    import numpy as np
+    import pandas as pd
     import plotly.graph_objects as go
 
     col = "account" if level == "account" else "lob"
@@ -127,7 +130,22 @@ def plotly_map(seats, background=None, extent=None, level="account",
                                   sizey=extent[3] - extent[2],
                                   sizing="stretch", opacity=1.0, layer="below"))
 
+    trapped = seats[seats.get("seat_status", "usable").eq("trapped")] \
+        if "seat_status" in seats.columns else seats.iloc[0:0]
+    if not trapped.empty:
+        why = trapped.get("trapped_reason", pd.Series("", index=trapped.index)).fillna("")
+        fig.add_trace(go.Scatter(
+            x=trapped["x_mm"], y=trapped["y_mm"], mode="markers",
+            name=f"Unusable ({len(trapped)})",
+            marker=dict(size=9, color=TRAPPED, symbol="square-open",
+                        line=dict(width=1.6, color=TRAPPED)),
+            customdata=np.stack([trapped["seat_id"], trapped["zone"], why], axis=-1),
+            hovertemplate="%{customdata[0]}<br>Zone %{customdata[1]}"
+                          "<br>Unusable — %{customdata[2]}<extra></extra>"))
+
     free = seats[seats[col].isna()]
+    if "seat_status" in seats.columns:
+        free = free[free["seat_status"].ne("trapped")]
     if not free.empty:
         fig.add_trace(go.Scatter(
             x=free["x_mm"], y=free["y_mm"], mode="markers", name="Unallocated",
