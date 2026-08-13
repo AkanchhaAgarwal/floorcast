@@ -225,3 +225,48 @@ def pmo(comp: pd.DataFrame, chase: pd.DataFrame, issues: pd.DataFrame) -> dict:
         "programmes_flagged": int(issues["programme"].nunique()) if issues is not None
         and not issues.empty else 0,
     }
+
+
+# ────────────────────────────────────────── client scoping
+def scope_to_account(df: pd.DataFrame, account: str, column: str = "account") -> pd.DataFrame:
+    """Cut a frame down to one client's rows.
+
+    This is the function a client-facing view must go through. Hiding a picker
+    while the underlying frame still holds every account is the kind of thing
+    that passes a demo and fails a penetration test — the data has to be cut,
+    not the control.
+    """
+    if df is None or df.empty or column not in df.columns:
+        return df.iloc[0:0] if df is not None else pd.DataFrame()
+    return df[df[column] == account].copy()
+
+
+def client_safe_view(alloc: pd.DataFrame, floors: pd.DataFrame, account: str,
+                     demand: pd.DataFrame = None, period: str = None) -> dict:
+    """What a client signed in as themselves may see.
+
+    Their own seats, their own floors, and whether they can grow. Deliberately
+    not included: which other clients hold the rest of the building, what those
+    clients pay, or how full the estate is. A client sharing a floor is told
+    that they share it — that is their contract — but not with whom.
+    """
+    mine = scope_to_account(alloc, account)
+    if mine.empty:
+        return {}
+    full = client(alloc, floors, account, demand=demand, period=period)
+    shared = bool(full.get("shares_with"))
+    return {
+        "seats": full["seats"],
+        "floors": full["floors"],
+        "sites": full["sites"],
+        "headroom": full["headroom"],
+        "need": full.get("need"),
+        "growth": full.get("growth"),
+        "verdict": full.get("verdict", ""),
+        "detail": mine[["site", "building", "floor", "lob", "seats"]]
+        .sort_values("seats", ascending=False),
+        "shares_a_floor": shared,
+        # names of the other clients are withheld on purpose
+        "shares_with": [],
+    }
+

@@ -408,31 +408,52 @@ with tab_role:
         if alloc is None or alloc.empty:
             st.info("Add the allocations file to see a client footprint.")
         else:
-            acct = st.selectbox("Account", sorted(alloc["account"].unique()), key="role_acct")
-            c = rl.client(alloc, floors, acct, demand=demand, period=r_period)
-            k = st.columns(4)
-            k[0].metric("Seats held", f"{c['seats']:,}")
-            k[1].metric("Seats needed", f"{c['need']:,}" if c.get("need") is not None else "—")
-            k[2].metric("Free beside them", f"{c['headroom']:,}")
-            k[3].metric("Floors", c["floors"])
+            accounts_all = sorted(alloc["account"].unique())
+            vc1, vc2 = st.columns([1, 2])
+            acct = vc1.selectbox("Viewing as", accounts_all, key="role_acct")
+            vc2.caption("**This is a preview of what that client sees when they sign in.** "
+                        "A client account is locked to its own footprint — the picker exists "
+                        "here so you can check each one. Their view is cut from the data, not "
+                        "hidden in the page: everything below is filtered to this client "
+                        "before it reaches the screen.")
 
-            if c.get("verdict"):
-                if c.get("growth") is not None and c["growth"] > c["headroom"]:
-                    st.error(c["verdict"])
-                elif c.get("growth", 0) > 0:
-                    st.success(c["verdict"])
-                else:
-                    st.info(c["verdict"])
-
-            st.markdown("##### Where they sit")
-            st.dataframe(c["detail"], width="stretch", hide_index=True)
-
-            if c["shares_with"]:
-                st.warning("Shares a floor with: " + ", ".join(c["shares_with"])
-                           + ". Confirm this is permitted under the contract.")
+            c = rl.client_safe_view(alloc, floors, acct, demand=demand, period=r_period)
+            if not c:
+                st.info(f"{acct} holds no seats in the allocations file.")
             else:
-                st.success("Sits on floors held by no other client — segregation is clean "
-                           "for this account today.")
+                k = st.columns(4)
+                k[0].metric("Seats held", f"{c['seats']:,}")
+                k[1].metric("Seats needed", f"{c['need']:,}" if c.get("need") is not None else "—")
+                k[2].metric("Free beside them", f"{c['headroom']:,}")
+                k[3].metric("Floors", c["floors"])
+
+                if c.get("verdict"):
+                    if c.get("growth") is not None and c["growth"] > c["headroom"]:
+                        st.error(c["verdict"])
+                    elif c.get("growth", 0) > 0:
+                        st.success(c["verdict"])
+                    else:
+                        st.info(c["verdict"])
+
+                st.markdown("##### Where you sit")
+                st.dataframe(c["detail"], width="stretch", hide_index=True)
+
+                if c["shares_a_floor"]:
+                    st.warning("Some of your seats are on floors shared with another client. "
+                               "Raise it with your account team if your contract requires "
+                               "dedicated space.")
+                else:
+                    st.success("All of your seats are on floors held by no other client.")
+
+                with st.expander("What this view deliberately does not show"):
+                    st.markdown(
+                        "- Which other clients are in the building, or where  \n"
+                        "- How full the wider estate is, or what is free elsewhere  \n"
+                        "- Any other client's headcount, growth or contract  \n\n"
+                        "A client sharing a floor is told that they share it — that is their "
+                        "contract — but not with whom. The internal Security and Operations "
+                        "views hold the full picture."
+                    )
 
     else:  # PMO
         if os_src is None or os_src["programmes"].empty:

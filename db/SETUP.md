@@ -112,6 +112,22 @@ customer to a first answer.
 
 ## What is deliberately not done
 
+**Client scoping is previewed, not enforced.** The Client role view cuts its data
+to one account through `roles.client_safe_view()`, and no other client's rows or
+names reach the page. But the account is chosen from a picker, not from who is
+signed in. To enforce it, add a column to `app_users`:
+
+```sql
+ALTER TABLE app_users ADD COLUMN account_scope text;
+COMMENT ON COLUMN app_users.account_scope IS
+  'Null for internal staff. Set for a client user, who may then see only that account.';
+```
+
+Then the view reads `account_scope` instead of offering a choice, and the query
+filters on it. Two rules matter: filter in the **query**, not the page — a hidden
+picker over unfiltered data passes a demo and fails a review — and treat a null
+scope as internal only after the role has been checked.
+
 **Authentication.** There is no login. `db.py` takes a `tenant_id` from the
 caller, and today nothing proves the caller is entitled to it. **Do not put this
 in front of two customers until auth is wired in** — isolation is sound at the
