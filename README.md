@@ -85,6 +85,39 @@ land 15% above plan **and** count the pipeline" is one question, not three.
 Scenarios can be named and saved, then compared side by side against the same baseline, so
 the difference between two answers is real rather than an artefact of what was loaded when.
 
+## Operational detail
+
+Five things a seat planner works with that raw capacity does not capture.
+
+**Nesting** — new starters sit somewhere before they reach production. A lever on the
+what-if dashboard holds a share of each period's *growth* as nesting seats, because
+nesting scales with how fast a programme is ramping rather than how big it is.
+
+**Move lead time** — a reallocation is done when IT has moved the network, not when the
+plan says so. Move options carry the lead time, so a move needed sooner than that is
+visibly not a move.
+
+**Enclosed or shared** — the request that starts a programme says whether it can share a
+floor. Set it per client on the Security view and the plan is checked against it: a
+programme needing enclosed space while sitting on a shared floor is flagged.
+
+**Billable seats** — seats paid for against seats used. Without a contract figure the tool
+says so rather than treating the allocation as the contract, which would answer nothing.
+
+**Over-contracted floors** — a floor held by one programme and largely empty is the
+cheapest capacity in an estate: the seats exist, they are paid for, and nothing has to be
+built. Surfaced on the Estate and Facility views.
+
+## Occupancy limits
+
+A large estate can run hot because there is somewhere to flex to; a small one cannot. The
+alert threshold therefore scales with the size of the region rather than being one number
+for everywhere, and regions are rated **healthy**, **strained** or **critical**.
+
+Unusable seats are shown against a budget and with a defence: a reason that has a route
+out — a renovation ends, IT provisioning ends — is defensible. One that does not is a seat
+the business is simply carrying.
+
 ## When it does not fit
 
 Options are ranked by cost, cheapest first:

@@ -22,6 +22,8 @@ from floorcast_core import floor_render as fr
 from floorcast_core import moves as mv
 from floorcast_core import restrictions as rx
 from floorcast_core import scenario as sc
+from floorcast_core import thresholds as th
+from floorcast_core import commercial as cm
 from floorcast_core import onesource as os1
 from floorcast_core import roles as rl
 from floorcast_core import plan_library as pl
@@ -328,6 +330,22 @@ with tab_role:
     r_tot = r_res["totals"]
 
     if who == "Leadership":
+        lvl_l = "geo" if "geo" in floors.columns else "site"
+        rt = th.rag(floors, lvl_l)
+        counts = rt["status"].value_counts().to_dict() if not rt.empty else {}
+        sc_ = st.columns(3)
+        for c, name in zip(sc_, ["Critical", "Strained", "Healthy"]):
+            c.metric(name, counts.get(name, 0),
+                     delta_color="inverse" if name != "Healthy" else "normal")
+        for a in th.alerts(rt, lvl_l)[:3]:
+            (st.error if "critical" in a else st.warning)(a)
+        if not rt.empty:
+            st.dataframe(rt[[lvl_l, "total_seats", "occupancy_%", "critical_above", "status"]],
+                         width="stretch", hide_index=True)
+        st.caption("Regions are rated against a limit that scales with their size — a small "
+                   "estate goes red sooner because it has less room to flex.")
+
+        st.markdown("##### The estate in numbers")
         vals = rl.leadership(floors, {**es.estate_totals(floors), **{}})
         cols = st.columns(len(vals))
         for c, (k, v) in zip(cols, vals.items()):
@@ -365,6 +383,18 @@ with tab_role:
         st.caption("Sorted by what a renovation would unlock. The lead time column is the one "
                    "that decides whether it helps this ramp or the next one.")
 
+        st.markdown("##### Space held but not used")
+        if alloc is None or alloc.empty:
+            st.info("Add the allocations file to see under-used floors.")
+        else:
+            oc_f = cm.over_contracted(floors, alloc_raw)
+            if oc_f.empty:
+                st.success("No floor is held by one programme and left largely empty.")
+            else:
+                st.dataframe(oc_f, width="stretch", hide_index=True)
+                st.info(cm.over_contracted_note(oc_f)
+                        + " Reallocating them needs an account conversation, not a build.")
+
     elif who == "Security":
         st.metric("Seats stranded by segregation",
                   f"{int(floors.loc[floors['trapped_reason'].eq('segregation'), 'trapped'].sum()):,}")
@@ -372,6 +402,31 @@ with tab_role:
         rs = RULES.summary()
         st.dataframe(rs if not rs.empty else pd.DataFrame({"note": ["No restrictions loaded"]}),
                      width="stretch", hide_index=True)
+        st.markdown("##### Enclosed or shared")
+        st.caption("The request that starts a programme says whether it can share a floor. "
+                   "Set it here and the plan is checked against it.")
+        if alloc is None or alloc.empty:
+            st.info("Add the allocations file to check space requirements.")
+        else:
+            accts_s = sorted(alloc["account"].unique())
+            need_map = {}
+            cols_s = st.columns(min(len(accts_s), 4) or 1)
+            for i, a_ in enumerate(accts_s):
+                need_map[a_] = cols_s[i % len(cols_s)].selectbox(
+                    a_, list(cm.SPACE_TYPES), key=f"space_{a_}",
+                    format_func=lambda k: k.capitalize())
+            chk = cm.space_check(alloc_raw, need_map)
+            if not chk.empty:
+                st.dataframe(chk, width="stretch", hide_index=True)
+                bad = chk[chk["meets_requirement"] == "no"]
+                if not bad.empty:
+                    st.error(", ".join(f"**{r['account']}** needs {r['needs']} space but "
+                                       f"shares {int(r['shared_floors'])} floor(s)"
+                                       for _, r in bad.iterrows())
+                             + ". Either move them, or partition the floor.")
+                else:
+                    st.success("Every programme is in the kind of space its request asked for.")
+
         st.info("Zone-level segregation is checked on the Floor map tab for any floor with a "
                 "plan loaded. A plan that fits on capacity can still breach a segregation "
                 "clause — the two are separate tests.")
@@ -505,6 +560,11 @@ with tab_what:
         w_exp = st.toggle("Count expansion space", value=True, key="w_exp")
         w_hor = st.slider("Landing within (weeks)", 0, 52, 12, 2, key="w_hor",
                           disabled=not w_exp)
+        st.markdown("**Nesting**")
+        w_nest = st.slider("Seats held for new starters", 0.0, 0.5, 0.0, 0.05,
+                           format="%.0f%%", key="w_nest",
+                           help="A share of each period's growth, held while new starters "
+                                "finish nesting before they reach production.")
         st.markdown("**Deals not yet won**")
         w_pipe = st.radio("Deals not yet won", ["exclude", "weighted", "full"], index=0,
                           key="w_pipe", horizontal=True,
@@ -513,12 +573,28 @@ with tab_what:
                                                  "full": "All of them"}[m],
                           label_visibility="collapsed")
 
+    demand_w = demand
+    nest_total = 0
+    if w_nest > 0:
+        nn = cm.nesting_need(demand, w_period, nest_pct=w_nest)
+        if not nn.empty:
+            nest_total = int(nn["nesting"].sum())
+            add = nn.rename(columns={"Account": "Account", "Site": "Site"})[
+                ["Account", "Site", "nesting"]]
+            demand_w = demand.merge(add, on=["Account", "Site"], how="left")
+            demand_w["nesting"] = demand_w["nesting"].fillna(0)
+            mask = demand_w["week"] == w_period
+            demand_w.loc[mask, "seats"] = (demand_w.loc[mask, "seats"]
+                                           + demand_w.loc[mask, "nesting"]).astype(int)
+
     lv = sc.levers(period=w_period, demand_uplift=w_uplift, release_reasons=w_reasons,
                    release_fraction=w_frac, include_expansion=w_exp, horizon_weeks=w_hor,
                    pipeline_mode=w_pipe)
-    now = sc.compute(floors, demand, pipe, lv)
+    now = sc.compute(floors, demand_w, pipe, lv)
     base_lv = sc.levers(period=w_period)
     base = sc.compute(floors, demand, pipe, base_lv)
+    if nest_total:
+        st.caption(f"Nesting adds {nest_total:,} seats to this period's requirement.")
     T, BT = now["totals"], base["totals"]
 
     with res:
@@ -659,6 +735,14 @@ with tab_what:
 # ═══════════════════════════════════════════════ 1 · ESTATE
 with tab_estate:
     st.caption("**How much space do we have, and how much of it can we actually use?**")
+
+    rag_level = "geo" if "geo" in floors.columns else "site"
+    rag_tbl = th.rag(floors, rag_level)
+    for a in th.alerts(rag_tbl, rag_level)[:4]:
+        (st.error if "critical" in a else st.warning)(a)
+    if not rag_tbl.empty and rag_tbl["status"].eq("Healthy").all():
+        st.success("Every region is inside its occupancy limit.")
+
     t = es.estate_totals(floors)
     c = st.columns(6)
     c[0].metric("Total seats", f"{t['total_seats']:,}")
@@ -674,6 +758,16 @@ with tab_estate:
                    horizontal=True, index=0)
     st.dataframe(es.rollup(floors, lvl), width="stretch", hide_index=True)
 
+    st.markdown("#### Occupancy against the limit")
+    st.caption("A large estate can run hot because there is somewhere to flex to; a small one "
+               "cannot. The limit therefore scales with the size of the region rather than "
+               "being one number for everywhere.")
+    rl_lvl = lvl if lvl in ("geo", "country", "city", "site") else "site"
+    st.dataframe(th.rag(floors, rl_lvl)[[rl_lvl, "total_seats", "allocated", "occupancy_%",
+                                         "strained_above", "critical_above", "status",
+                                         "headroom_seats"]],
+                 width="stretch", hide_index=True)
+
     st.markdown("#### Trapped seats")
     st.caption("Seats that physically exist and are paid for, but cannot be sold to a "
                "client — stranded inside another client's secure zone, waiting on IT, or "
@@ -681,6 +775,36 @@ with tab_estate:
                "decides whether it can be recovered.")
     tb = es.trapped_breakdown(floors)
     st.dataframe(tb, width="stretch", hide_index=True)
+    st.markdown("##### Against what the business will carry")
+    st.caption("Unusable seats have to be justified, not just reported — there is a limit on "
+               "how many the organisation will hold, and the monthly report has to defend them.")
+    tp = th.trapped_position(floors, rag_level)
+    st.dataframe(tp, width="stretch", hide_index=True)
+    over = tp[tp["within_budget"] == "no"]
+    if not over.empty:
+        st.warning(", ".join(f"{r[rag_level]} is {int(r['over_budget'])} seats over budget"
+                             for _, r in over.iterrows())
+                   + " — each of those needs a reason leadership will accept.")
+
+    st.markdown("#### Floors held but barely used")
+    st.caption("A programme holding a whole floor while occupying part of it is the cheapest "
+               "capacity there is — the seats exist, they are already paid for, and nothing "
+               "has to be built.")
+    if alloc is None or alloc.empty:
+        st.info("Add the allocations file to see which floors are held but under-used.")
+    else:
+        oc = cm.over_contracted(floors, alloc_raw)
+        if oc.empty:
+            st.success("No floor is held by a single programme that is using well under it.")
+        else:
+            st.dataframe(oc, width="stretch", hide_index=True)
+            st.info(cm.over_contracted_note(oc))
+
+    st.markdown("##### The defence for each one")
+    st.caption("A reason with a route out is defensible. One without is a seat the business "
+               "is simply carrying, and that is the conversation leadership will open.")
+    st.dataframe(th.justification(floors, rag_level), width="stretch", hide_index=True)
+
     rel = int(tb.loc[tb["releasable"], "seats"].sum())
     st.info(f"**{rel:,} of {t['trapped']:,} trapped seats** sit against reasons that a "
             f"partition move, an IT rollout or a relocation could address — "
@@ -829,7 +953,10 @@ with tab_ramp:
                     else:
                         st.warning("Every option needs somewhere for the movers to go, and this "
                                    "site has no room elsewhere. Look at trapped seats or another site.")
-                    st.dataframe(opts, width="stretch", hide_index=True)
+                    sched = cm.move_schedule(opts)
+                    st.dataframe(sched, width="stretch", hide_index=True)
+                    if best.get("cheapest_moves"):
+                        st.caption(cm.move_note(best["cheapest_moves"]))
             with t_b:
                 if cons.empty:
                     st.info("No account at this site is split across floors.")
