@@ -1,0 +1,5 @@
+country,city,site,building,tower,floor,seat_rows,seat_cols
+India,Gurugram,GGN-1,B1,T1,F2,10,16
+India,Gurugram,GGN-1,B1,T1,F3,12,20
+India,Gurugram,GGN-1,B1,T2,F1,10,20
+India,Noida,NOI-2,B1,T1,F5,8,12

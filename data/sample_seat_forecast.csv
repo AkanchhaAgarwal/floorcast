@@ -1,0 +1,8 @@
+account,lob,country,city,site,building,tower,floor,seats
+HealthFirst,Claims,India,Gurugram,GGN-1,B1,T1,F3,120
+HealthFirst,Enrollment,India,Gurugram,GGN-1,B1,T1,F3,60
+HealthFirst,Provider,India,Gurugram,GGN-1,B1,T1,,45
+RetailMax,CustomerCare,India,Gurugram,GGN-1,B1,T2,,150
+RetailMax,Escalations,India,Gurugram,GGN-1,B1,T2,,30
+FinServe,KYC,India,Gurugram,GGN-1,B1,T1,,80
+FinServe,Disputes,India,Noida,NOI-2,B1,T1,,70
