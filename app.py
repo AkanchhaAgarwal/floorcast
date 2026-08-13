@@ -1021,5 +1021,3 @@ with tab_qa:
                 st.caption("Generated from the workbook itself, so it cannot drift out of step "
                            "with the data the way a maintained list does.")
 
-st.caption("Floorcast · layouts are planning drafts — fire egress, travel distances and "
-           "occupancy limits must be verified and certified by a licensed architect.")
