@@ -159,11 +159,9 @@ streamlit run app.py
 
 Sample data is bundled; the app runs instantly and sample CSVs are downloadable in-app.
 
-## Boundaries
+## Sample data
 
-All layouts are planning drafts, not construction drawings. Fire and safety exits, egress
-travel distances, occupancy loads, and accessibility clearances must be verified and
-certified by a licensed architect before implementation. Bundled data is synthetic.
+Bundled sample data is synthetic.
 
 ## Author
 

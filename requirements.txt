@@ -7,3 +7,5 @@ ezdxf>=1.1
 pymupdf>=1.24
 plotly>=5.18
 pillow>=10.0
+psycopg[binary]>=3.1
+boto3>=1.34

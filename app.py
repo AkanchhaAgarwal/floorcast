@@ -1020,4 +1020,3 @@ with tab_qa:
                                    file_name="not_updated.csv", mime="text/csv")
                 st.caption("Generated from the workbook itself, so it cannot drift out of step "
                            "with the data the way a maintained list does.")
-
