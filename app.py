@@ -26,6 +26,9 @@ from floorcast_core import thresholds as th
 from floorcast_core import commercial as cm
 from floorcast_core import expansion as ex
 from floorcast_core import oneview as ov
+from floorcast_core import sharing as sg
+from floorcast_core import seating as se
+from floorcast_core import revenue as rv
 from floorcast_core import onesource as os1
 from floorcast_core import roles as rl
 from floorcast_core import plan_library as pl
@@ -180,6 +183,11 @@ def load_plan(data, name):
 with st.sidebar:
     st.header("Inputs")
     st.caption("Upload your files. Nothing is kept between sessions.")
+    seat_model = st.radio("How are seats allocated?", list(se.MODELS),
+                          format_func=lambda m: se.MODELS[m]["label"], key="seat_model",
+                          help="Pooled for contact centres, assigned where everyone owns a "
+                               "desk, neighbourhoods where a team owns a zone.")
+    st.caption(se.MODELS[seat_model]["for"] + ". " + se.MODELS[seat_model]["ratio"] + ".")
     st.divider()
     if True:
         f_file = st.file_uploader("1 · Floor inventory (CSV)", type="csv",
@@ -194,6 +202,16 @@ with st.sidebar:
         a_file = st.file_uploader("4 · Allocations by floor (CSV) — optional", type="csv",
                                   help="site, building, floor, account, lob, seats — who holds "
                                        "which seats. Unlocks consolidation and relocation options.")
+        sh_file = st.file_uploader("8 · Shift patterns (CSV) — optional", type="csv",
+                                   help="account, site, shift, start_hour, end_hour, "
+                                        "system_locked — lets two accounts on opposite "
+                                        "shifts share a seat")
+        rt_file = st.file_uploader("9 · Rate card (CSV) — optional", type="csv",
+                                   help="site, rate_per_seat (and optionally account) — "
+                                        "turns the plan into revenue per seat")
+        ro_file = st.file_uploader("10 · Employee roster (CSV) — optional", type="csv",
+                                   help="employee_id, account, site (and seat_id if they "
+                                        "already have one) — for assigned seating")
         s_file = st.file_uploader("6 · Programmes winding down (CSV) — optional", type="csv",
                                   help="account, lob, site, end_month, reason, "
                                        "seats_released — demand that is leaving")
@@ -241,6 +259,12 @@ alloc_raw = load_alloc(a_file.getvalue()) if a_file \
     else _bundled("data/sample_allocations.csv", load_alloc)
 rules_raw = load_rules(r_file.getvalue()) if r_file \
     else _bundled("data/sample_restrictions.csv", load_rules)
+shifts_raw = load_alloc(sh_file.getvalue()) if sh_file \
+    else _bundled("data/sample_shifts.csv", load_alloc)
+rates_raw = load_alloc(rt_file.getvalue()) if rt_file \
+    else _bundled("data/sample_rate_card.csv", load_alloc)
+roster_raw = load_alloc(ro_file.getvalue()) if ro_file \
+    else _bundled("data/sample_roster.csv", load_alloc)
 sunset_raw = load_alloc(s_file.getvalue()) if s_file \
     else _bundled("data/sample_sunsetting.csv", load_alloc)
 if sunset_raw is None:
@@ -584,6 +608,56 @@ with tab_role:
             st.dataframe(oc_fin, width="stretch", hide_index=True)
             st.caption("Recovering these needs an account conversation, not a build — which "
                        "makes them the cheapest seats on the table.")
+
+        st.markdown("##### Revenue per seat")
+        if rates_raw is None or rates_raw.empty:
+            st.info("Add a rate card — site, rate_per_seat — and this becomes revenue per "
+                    "seat, the cost of idle space, and what the unusable seats would be "
+                    "worth if they could be sold.")
+        else:
+            rp = rv.position(floors, alloc_raw, rates_raw)
+            tot_r = rv.totals(rp)
+            rk = st.columns(4)
+            rk[0].metric("Revenue per seat sold", f"{tot_r['currency']}{tot_r['per_seat_sold']:,.0f}")
+            rk[1].metric("Revenue per seat owned",
+                         f"{tot_r['currency']}{tot_r['per_seat_owned']:,.0f}",
+                         delta=f"-{tot_r['per_seat_sold'] - tot_r['per_seat_owned']:,.0f} diluted",
+                         delta_color="inverse")
+            rk[2].metric("Seats earning nothing", f"{tot_r['idle_seats']:,}")
+            rk[3].metric("Cost of that idle space",
+                         f"{tot_r['currency']}{tot_r['cost_of_idle']:,.0f}")
+            st.caption("**Per seat sold** is the rate. **Per seat owned** spreads it across "
+                       "every seat in the building, including the ones earning nothing. The "
+                       "gap between them is what empty and unusable space costs.")
+            st.dataframe(rp[["site", "total_seats", "seats_sold", "rate", "revenue",
+                             "rev_per_seat_sold", "rev_per_seat_owned", "dilution",
+                             "cost_of_idle"]], width="stretch", hide_index=True)
+
+            rec_v = rv.recovery_value(floors, rates_raw,
+                                      ["segregation", "layout", "it_not_ready",
+                                       "under_renovation"])
+            if rec_v.get("seats"):
+                st.success(f"The {rec_v['seats']:,} recoverable unusable seats would be worth "
+                           f"**{tot_r['currency']}{rec_v['value']:,.0f}** if they could be "
+                           "sold. That is the trapped-seat case in the currency that gets it "
+                           "approved.")
+
+            st.markdown("##### Revenue per seat across the horizon")
+            fc_r = rv.forecast(demand, floors, rates_raw)
+            if not fc_r.empty:
+                st.line_chart(fc_r.set_index("period")[["rev_per_seat_sold",
+                                                        "rev_per_seat_owned"]], height=240)
+                st.caption("A rising owned line means seats filling up. A falling one means "
+                           "the estate growing faster than the demand for it.")
+                exp_seats = int(floors["expansion_space"].sum()) \
+                    if "expansion_space" in floors.columns else 0
+                if exp_seats:
+                    eff = rv.expansion_effect(fc_r, exp_seats)
+                    (st.warning if eff["change"] < 0 else st.success)(
+                        f"Taking the {exp_seats:,} seats of planned expansion with no extra "
+                        f"revenue moves revenue per seat owned from "
+                        f"{tot_r['currency']}{eff['before']:,.0f} to "
+                        f"{tot_r['currency']}{eff['after']:,.0f}. {eff['verdict']}.")
 
         st.markdown("##### Renovation spend in the plan")
         yr_fin = ex.expansion_by_year(floors)
@@ -1165,6 +1239,46 @@ with tab_map:
                     st.warning(f"{len(seg2)} zone(s) shared by more than one client.")
                     st.dataframe(seg2, width="stretch", hide_index=True)
 
+                if seat_model == "assigned":
+                    st.markdown("###### Who sits at which desk")
+                    if roster_raw is None or roster_raw.empty:
+                        st.info("Add an employee roster — employee_id, account, site — to "
+                                "place named people at named desks.")
+                    else:
+                        rprob = se.validate_roster(roster_raw)
+                        if rprob:
+                            st.error("Roster cannot be used:\n\n"
+                                     + "\n".join(f"- {p}" for p in rprob))
+                        else:
+                            mine_r = roster_raw[roster_raw["site"] == msite2] \
+                                if "site" in roster_raw.columns else roster_raw
+                            asg = se.assign(mine_r, seats_all)
+                            summ_a = se.assignment_summary(asg, seats_all)
+                            ak = st.columns(4)
+                            ak[0].metric("People", f"{summ_a.get('people', 0):,}")
+                            ak[1].metric("Seated", f"{summ_a.get('seated', 0):,}")
+                            ak[2].metric("Kept their desk", f"{summ_a.get('kept_existing', 0):,}")
+                            ak[3].metric("Empty desks", f"{summ_a.get('empty_desks', 0):,}")
+                            st.caption("People already sitting somewhere stay there. Moving "
+                                       "somebody who does not need to move is the most "
+                                       "expensive thing a seating plan can do.")
+                            st.dataframe(asg, width="stretch", hide_index=True, height=260)
+                            if summ_a.get("without_a_seat"):
+                                st.error(f"{summ_a['without_a_seat']} person(s) have no desk "
+                                         "on this site.")
+                elif seat_model == "neighbourhood":
+                    st.markdown("###### Team neighbourhoods")
+                    nb = se.neighbourhoods(seats_all, demand, mperiod2)
+                    if nb.empty:
+                        st.info("No zones or no demand to match at this site.")
+                    else:
+                        st.dataframe(nb, width="stretch", hide_index=True)
+                        waste = int(nb["spare_in_zone"].clip(lower=0).sum())
+                        st.caption(f"A neighbourhood is taken whole, so {waste:,} seat(s) sit "
+                                   "spare inside zones that are bigger than the team. That "
+                                   "waste is the price of the model, and it should be visible "
+                                   "rather than buried.")
+
                 st.markdown("###### The floors")
                 fl_list = pl.floors_for(library, msite2)
                 ftabs = st.tabs([f"Floor {f}" for f in fl_list])
@@ -1225,6 +1339,30 @@ with tab_scen:
                            ["site", "floor_id", "trapped_reason", "released",
                             "available", "trapped"]],
                  width="stretch", hide_index=True)
+
+    st.markdown("#### Seats shared across shifts")
+    st.caption("Two accounts working opposite hours can use the same desk — provided their "
+               "systems can be handed over and no rule keeps them apart.")
+    if shifts_raw is None or shifts_raw.empty:
+        st.info("Add a shift pattern file — account, site, shift, start_hour, end_hour, "
+                "system_locked — to see which accounts could share seats.")
+    else:
+        probs_sh = sg.validate(shifts_raw)
+        if probs_sh:
+            st.error("Shift file cannot be used:\n\n" + "\n".join(f"- {p}" for p in probs_sh))
+        else:
+            sp_req = {}
+            pr = sg.pairs(shifts_raw, rules=RULES, space_requirements=sp_req)
+            sv = sg.savings(pr, demand, dr.peak_week(demand))
+            st.info(sg.note(sv))
+            if not sv.empty:
+                st.dataframe(sv, width="stretch", hide_index=True)
+            with st.expander("Pairs that cannot share, and why"):
+                blocked = pr[pr["can_share"] == "no"]
+                st.dataframe(blocked[["site", "account_a", "account_b", "overlap_hours",
+                                      "why_not"]] if not blocked.empty else
+                             pd.DataFrame({"note": ["Every pair at every site could share."]}),
+                             width="stretch", hide_index=True)
 
     st.markdown("#### Deals not yet won")
     st.caption("Business sales is chasing but has not signed. The likely view is what you plan "
